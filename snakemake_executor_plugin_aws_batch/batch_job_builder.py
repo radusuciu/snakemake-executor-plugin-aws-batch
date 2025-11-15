@@ -157,8 +157,9 @@ class BatchJobBuilder:
     def _parse_rule_secrets(self) -> List[dict]:
         """Parse per-rule secrets from job resources.
 
-        Resources in Snakemake can only be int, str, None, or callables that return those types.
-        This method handles aws_batch_secrets as a JSON string or callable.
+        Resources in Snakemake can be int, str, None, or callables that return those types.
+        Callables are evaluated by Snakemake before execution, so we only receive the value.
+        This method expects aws_batch_secrets to be a JSON string.
 
         Returns:
             List of secret dicts parsed from the resource value
@@ -171,22 +172,10 @@ class BatchJobBuilder:
         if secrets_value is None or secrets_value == "":
             return []
 
-        # Handle callable resources (functions/lambdas that return a JSON string)
-        if callable(secrets_value):
-            try:
-                # Call the function with wildcards if available
-                # Snakemake callables typically take wildcards as first argument
-                secrets_value = secrets_value(getattr(self.job, 'wildcards', None))
-            except Exception as e:
-                raise WorkflowError(
-                    f"Failed to call aws_batch_secrets callable: {e}"
-                ) from e
-
-        # At this point, secrets_value should be a string (JSON)
+        # Expect a JSON string (or the result of a callable that returned a JSON string)
         if not isinstance(secrets_value, str):
             raise WorkflowError(
-                f"aws_batch_secrets must be a JSON string or callable returning a JSON string, "
-                f"got {type(secrets_value)}. "
+                f"aws_batch_secrets must be a JSON string, got {type(secrets_value)}. "
                 f"Example: aws_batch_secrets='[{{\"name\":\"API_KEY\",\"valueFrom\":\"arn:...\"}}]'"
             )
 
