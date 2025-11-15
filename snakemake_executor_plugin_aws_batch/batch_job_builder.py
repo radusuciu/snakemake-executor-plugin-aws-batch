@@ -1,6 +1,6 @@
 import json
 import uuid
-from typing import List
+from typing import Any, List
 
 from snakemake_interface_common.exceptions import WorkflowError
 from snakemake_interface_executor_plugins.jobs import JobExecutorInterface
@@ -214,6 +214,53 @@ class BatchJobBuilder:
         return [{"name": name, "valueFrom": value_from}
                 for name, value_from in secrets_dict.items()]
 
+    def _validate_timeout(self, timeout_value: Any, source: str) -> int:
+        """Validate timeout value meets AWS Batch requirements.
+
+        Args:
+            timeout_value: The timeout value to validate
+            source: Description of where timeout came from (for error messages)
+
+        Returns:
+            Validated timeout as integer
+
+        Raises:
+            WorkflowError: If timeout value is invalid
+        """
+        try:
+            timeout_int = int(timeout_value)
+        except (ValueError, TypeError) as e:
+            raise WorkflowError(
+                f"{source} timeout must be an integer, got {type(timeout_value)}: {timeout_value}"
+            ) from e
+
+        if timeout_int < 60:
+            raise WorkflowError(
+                f"{source} timeout must be at least 60 seconds, got {timeout_int}"
+            )
+
+        return timeout_int
+
+    def _get_timeout(self) -> int:
+        """Get timeout value from per-rule resource or fall back to global setting.
+
+        Per-rule timeout takes precedence over global task_timeout setting.
+
+        Returns:
+            Timeout in seconds (minimum 60)
+
+        Raises:
+            WorkflowError: If timeout value is invalid
+        """
+        # Check for per-rule timeout
+        rule_timeout = self.job.resources.get("aws_batch_timeout", None)
+
+        if rule_timeout is not None:
+            return self._validate_timeout(rule_timeout, "Per-rule")
+
+        # Fall back to global setting
+        return self._validate_timeout(self.settings.task_timeout, "Global")
+
     def _validate_ec2_resources(self, vcpu: int, mem: int) -> tuple[str, str]:
         """Validates vcpu and memory for EC2 compute environments.
 
@@ -301,7 +348,7 @@ class BatchJobBuilder:
                 }
             )
 
-        timeout = {"attemptDurationSeconds": self.settings.task_timeout}
+        timeout = {"attemptDurationSeconds": self._get_timeout()}
         tags = self.settings.tags if isinstance(self.settings.tags, dict) else dict()
         try:
             job_def = self.batch_client.register_job_definition(

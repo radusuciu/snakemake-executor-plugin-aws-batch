@@ -141,6 +141,29 @@ rule my_rule:
 
 This allows you to use different containers with specialized tools for different rules within the same workflow, rather than requiring all tools to be present in a single container.
 
+# Rule-Specific Job Timeouts
+
+By default, all jobs use the global timeout specified via `--aws-batch-task-timeout` (default: 300 seconds). However, you can specify a different timeout for individual rules using the `aws_batch_timeout` resource parameter:
+
+```python
+rule long_running_task:
+    input:
+        "input.txt"
+    output:
+        "output.txt"
+    resources:
+        aws_batch_timeout=7200  # 2 hours
+    shell:
+        "long_process.sh {input} {output}"
+```
+
+The timeout value must be:
+- An integer representing seconds
+- At least 60 seconds (AWS Batch minimum)
+- No maximum limit (though Fargate jobs have a practical 14-day limit)
+
+Per-rule timeouts take precedence over the global `--aws-batch-task-timeout` setting, allowing you to customize timeouts for specific rules that need more (or less) time to complete.
+
 # Example
 
 ## Create environment
