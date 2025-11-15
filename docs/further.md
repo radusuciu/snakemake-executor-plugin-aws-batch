@@ -1,4 +1,4 @@
-# AWS Credentials 
+# AWS Credentials
 
 This plugin assumes you have setup AWS CLI credentials in ~/.aws/credentials. For more
 information see [aws cli configuration](https://docs.aws.amazon.com/cli/v1/userguide/cli-configure-files.html).
@@ -27,6 +27,82 @@ running terraform apply can be exported as environment variables for snakemake-e
 SNAKEMAKE_AWS_BATCH_REGION
 SNAKEMAKE_AWS_BATCH_JOB_QUEUE
 SNAKEMAKE_AWS_BATCH_JOB_ROLE
+
+
+# AWS Secrets
+
+This plugin supports injecting secrets from AWS Secrets Manager or AWS Systems Manager Parameter Store into your Batch jobs. Secrets can be configured globally (applied to all jobs) or per-rule (applied to specific rules).
+
+## Global Secrets
+
+Global secrets are configured via the `--aws-batch-secrets` CLI flag or the `SNAKEMAKE_AWS_BATCH_SECRETS` environment variable, and are applied to all jobs:
+
+```bash
+snakemake --executor aws-batch \
+    --aws-batch-secrets '[{"name":"DB_PASSWORD","valueFrom":"arn:aws:secretsmanager:us-west-2:123456789:secret:db-pass"}]'
+```
+
+## Per-Rule Secrets
+
+Per-rule secrets are specified in the Snakefile using the `aws_batch_secrets` resource:
+
+```python
+rule my_rule:
+    input: "input.txt"
+    output: "output.txt"
+    resources:
+        aws_batch_secrets=[
+            {
+                "name": "API_KEY",
+                "valueFrom": "arn:aws:secretsmanager:us-west-2:123456789:secret:api-key"
+            }
+        ]
+    shell:
+        "process_data.sh {input} {output}"
+```
+
+## Merging Global and Per-Rule Secrets
+
+When both global and per-rule secrets are specified, they are merged. If a secret with the same `name` is defined in both global and per-rule secrets, the per-rule value takes precedence.
+
+## Secret Format
+
+Secrets must be a list of dictionaries with two keys:
+- `name`: The name of the environment variable to set in the container
+- `valueFrom`: The ARN of the secret in AWS Secrets Manager or Systems Manager Parameter Store
+
+**Secrets Manager example:**
+```
+arn:aws:secretsmanager:region:account-id:secret:secret-name
+```
+
+**Systems Manager Parameter Store example:**
+```
+arn:aws:ssm:region:account-id:parameter/parameter-name
+```
+
+## Required IAM Permissions
+
+To use secrets, your AWS Batch job role must have permissions to access the secrets:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "secretsmanager:GetSecretValue",
+                "ssm:GetParameters"
+            ],
+            "Resource": [
+                "arn:aws:secretsmanager:region:account-id:secret:*",
+                "arn:aws:ssm:region:account-id:parameter/*"
+            ]
+        }
+    ]
+}
+```
 
 # Rule-Specific Container Images
 

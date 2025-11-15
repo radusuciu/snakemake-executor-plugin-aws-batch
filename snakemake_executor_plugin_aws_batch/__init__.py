@@ -72,6 +72,19 @@ class ExecutorSettings(ExecutorSettingsBase):
             )
         },
     )
+    secrets: Optional[List[dict]] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Global AWS Secrets to inject into all containers. List of dicts with "
+                "'name' (environment variable name) and 'valueFrom' (ARN of secret in "
+                "Secrets Manager or Systems Manager Parameter Store). Can be combined "
+                "with per-rule secrets via aws_batch_secrets resource."
+            ),
+            "env_var": False,
+            "required": False,
+        },
+    )
 
 
 # Required:

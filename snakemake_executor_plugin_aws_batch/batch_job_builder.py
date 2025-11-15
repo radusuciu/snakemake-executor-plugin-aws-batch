@@ -1,13 +1,15 @@
 import uuid
 from typing import List
+
 from snakemake_interface_common.exceptions import WorkflowError
 from snakemake_interface_executor_plugins.jobs import JobExecutorInterface
+
 from snakemake_executor_plugin_aws_batch.batch_client import BatchClient
 from snakemake_executor_plugin_aws_batch.constant import (
-    VALID_RESOURCES_MAPPING,
     BATCH_JOB_DEFINITION_TYPE,
     BATCH_JOB_PLATFORM_CAPABILITIES,
     BATCH_JOB_RESOURCE_REQUIREMENT_TYPE,
+    VALID_RESOURCES_MAPPING,
 )
 
 
@@ -124,6 +126,52 @@ class BatchJobBuilder:
             )
             return str(vcpu), str(min_mem)
 
+    def _validate_secrets(self, secrets: List[dict], source: str) -> dict:
+        """Validate secrets list and return as dict keyed by name.
+
+        Args:
+            secrets: List of secret dicts to validate
+            source: Description of where secrets came from (for error messages)
+
+        Returns:
+            Dict mapping secret name to valueFrom
+
+        Raises:
+            WorkflowError: If any secret is invalid
+        """
+        result = {}
+        for secret in secrets:
+            if not isinstance(secret, dict):
+                raise WorkflowError(
+                    f"{source} secret must be a dict with 'name' and 'valueFrom' keys, "
+                    f"got {type(secret)}"
+                )
+            if "name" not in secret or "valueFrom" not in secret:
+                raise WorkflowError(
+                    f"{source} secret must have 'name' and 'valueFrom' keys, got {secret}"
+                )
+            result[secret["name"]] = secret["valueFrom"]
+        return result
+
+    def _merge_secrets(self) -> List[dict]:
+        """Merge global and per-rule secrets.
+
+        Per-rule secrets take precedence over global secrets when both define
+        the same environment variable name.
+
+        Returns:
+            List of secret dicts with 'name' and 'valueFrom' keys
+        """
+        # Merge global and rule secrets (rule secrets override global)
+        secrets_dict = {
+            **self._validate_secrets(self.settings.secrets or [], "Global"),
+            **self._validate_secrets(self.job.resources.get("aws_batch_secrets", []), "Rule")
+        }
+
+        # Convert back to list format for AWS Batch
+        return [{"name": name, "valueFrom": value_from}
+                for name, value_from in secrets_dict.items()]
+
     def _validate_ec2_resources(self, vcpu: int, mem: int) -> tuple[str, str]:
         """Validates vcpu and memory for EC2 compute environments.
 
@@ -166,6 +214,8 @@ class BatchJobBuilder:
         if self.envvars:
             environment = [{"name": k, "value": v} for k, v in self.envvars.items()]
 
+        secrets = self._merge_secrets()
+
         container_properties = {
             "image": self.container_image,
             # command requires a list of strings (docker CMD format)
@@ -184,6 +234,10 @@ class BatchJobBuilder:
                 },
             ],
         }
+
+        # Add secrets if any are configured
+        if secrets:
+            container_properties["secrets"] = secrets
 
         if gpu > 0:
             container_properties["resourceRequirements"].append(
