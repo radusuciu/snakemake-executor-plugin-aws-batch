@@ -23,6 +23,7 @@ class BatchJobBuilder:
         settings,
         job_command: str,
         batch_client: BatchClient,
+        job_queue: str,
     ):
         self.logger = logger
         self.job = job
@@ -31,6 +32,7 @@ class BatchJobBuilder:
         self.settings = settings
         self.job_command = job_command
         self.batch_client = batch_client
+        self.job_queue = job_queue
         self.created_job_defs = []
         # Determine platform from job queue
         self.platform = self._get_platform_from_queue()
@@ -268,7 +270,7 @@ class BatchJobBuilder:
 
         job_params = {
             "jobName": job_name,
-            "jobQueue": self.settings.job_queue,
+            "jobQueue": self.job_queue,
             "jobDefinition": "{}:{}".format(
                 job_def["jobDefinitionName"], job_def["revision"]
             ),
