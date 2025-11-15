@@ -46,6 +46,46 @@ rule my_rule:
 
 This allows you to use different containers with specialized tools for different rules within the same workflow, rather than requiring all tools to be present in a single container.
 
+# Consumable Resources
+
+AWS Batch supports [consumable resources](https://docs.aws.amazon.com/batch/latest/userguide/resource-aware-scheduling-how-to-create.html) for rate-limited resources like software licenses, database connections, or API tokens. Consumable resources enable resource-aware scheduling, ensuring jobs only run when the required resources are available.
+
+## Creating Consumable Resources
+
+Before using consumable resources in your workflows, you must create them in AWS Batch. Each consumable resource requires:
+- **Resource Name**: Unique identifier for the resource
+- **Total Quantity**: Maximum number of units available
+- **Resource Type**: Either `REPLENISHABLE` (resources return to pool after job completes) or `NON_REPLENISHABLE` (resources are permanently consumed)
+
+Create a consumable resource using the AWS CLI:
+
+```bash
+aws batch create-consumable-resource \
+    --consumable-resource-name license-pool \
+    --total-quantity 10 \
+    --resource-type REPLENISHABLE
+```
+
+## Using Consumable Resources in Rules
+
+Specify consumable resources at the rule level using the `aws_batch_consumable_resources` resource parameter. The value should be a list of dictionaries, each containing:
+- `consumableResource`: The name of the consumable resource
+- `quantity`: The number of units required (must be a positive integer)
+
+```python
+rule licensed_analysis:
+    input:
+        "data.txt"
+    output:
+        "analysis.txt"
+    resources:
+        aws_batch_consumable_resources=[
+            {"consumableResource": "license-pool", "quantity": 2}
+        ]
+    shell:
+        "run_analysis.sh {input} {output}"
+```
+
 # Example
 
 ## Create environment

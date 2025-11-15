@@ -149,6 +149,76 @@ class BatchJobBuilder:
         else:
             return self._validate_ec2_resources(vcpu_int, mem_int)
 
+    def _validate_consumable_resources(self, resources: list) -> list:
+        """Validate consumable resources format and values.
+
+        Args:
+            resources: List of consumable resource dicts
+
+        Returns:
+            list: Validated consumable resources in AWS Batch format
+
+        Raises:
+            WorkflowError: If validation fails
+        """
+        if not isinstance(resources, list):
+            raise WorkflowError(
+                "aws_batch_consumable_resources must be a list of dicts"
+            )
+
+        validated_resources = []
+        for resource in resources:
+            if not isinstance(resource, dict):
+                raise WorkflowError(
+                    "Each consumable resource must be a dict with "
+                    "'consumableResource' and 'quantity' keys"
+                )
+
+            if "consumableResource" not in resource:
+                raise WorkflowError(
+                    "Consumable resource must have 'consumableResource' key"
+                )
+
+            if "quantity" not in resource:
+                raise WorkflowError(
+                    "Consumable resource must have 'quantity' key"
+                )
+
+            # Validate quantity is a positive number
+            try:
+                quantity = int(resource["quantity"])
+                if quantity <= 0:
+                    raise WorkflowError(
+                        f"Consumable resource quantity must be positive, got {quantity}"
+                    )
+            except (ValueError, TypeError) as e:
+                raise WorkflowError(
+                    f"Consumable resource quantity must be a number: {e}"
+                ) from e
+
+            validated_resources.append({
+                "consumableResource": str(resource["consumableResource"]),
+                "quantity": quantity
+            })
+
+        return validated_resources
+
+    def _get_consumable_resources(self) -> list:
+        """Extract and validate consumable resources from job resources.
+
+        Consumable resources are rate-limited resources like licenses or database
+        connections that can be specified at the rule level.
+
+        Returns:
+            list: List of consumable resource requirements in AWS Batch format
+        """
+        consumable_resources = self.job.resources.get("aws_batch_consumable_resources", [])
+
+        if not consumable_resources:
+            return []
+
+        return self._validate_consumable_resources(consumable_resources)
+
     def build_job_definition(self):
         job_uuid = str(uuid.uuid4())
         job_name = f"snakejob-{self.job.name}-{job_uuid}"
@@ -192,6 +262,13 @@ class BatchJobBuilder:
                     "value": gpu_str,
                 }
             )
+
+        # Add consumable resources if specified
+        consumable_resources = self._get_consumable_resources()
+        if consumable_resources:
+            container_properties["consumableResourceProperties"] = {
+                "consumableResourceList": consumable_resources
+            }
 
         timeout = {"attemptDurationSeconds": self.settings.task_timeout}
         tags = self.settings.tags if isinstance(self.settings.tags, dict) else dict()
