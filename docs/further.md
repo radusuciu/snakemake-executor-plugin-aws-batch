@@ -46,19 +46,14 @@ snakemake --executor aws-batch \
 
 ## Per-Rule Secrets
 
-Per-rule secrets are specified in the Snakefile using the `aws_batch_secrets` resource:
+Per-rule secrets are specified in the Snakefile using the `aws_batch_secrets` resource. The value must be a **JSON string** (not a Python list):
 
 ```python
 rule my_rule:
     input: "input.txt"
     output: "output.txt"
     resources:
-        aws_batch_secrets=[
-            {
-                "name": "API_KEY",
-                "valueFrom": "arn:aws:secretsmanager:us-west-2:123456789:secret:api-key"
-            }
-        ]
+        aws_batch_secrets='[{"name":"API_KEY","valueFrom":"arn:aws:secretsmanager:us-west-2:123456789:secret:api-key"}]'
     shell:
         "process_data.sh {input} {output}"
 ```
@@ -69,9 +64,11 @@ When both global and per-rule secrets are specified, they are merged. If a secre
 
 ## Secret Format
 
-Secrets must be a list of dictionaries with two keys:
+Secrets must be formatted as a JSON array of objects, where each object has two keys:
 - `name`: The name of the environment variable to set in the container
 - `valueFrom`: The ARN of the secret in AWS Secrets Manager or Systems Manager Parameter Store
+
+**Note:** When using global secrets (via `--aws-batch-secrets`), the value is passed as a JSON string on the command line. When using per-rule secrets (via `aws_batch_secrets` resource), the value must also be a JSON string within the Snakefile.
 
 **Secrets Manager example:**
 ```
