@@ -258,6 +258,14 @@ class BatchJobBuilder:
 
         secrets = self._merge_secrets()
 
+        # Validate that execution role is provided when secrets are configured
+        if secrets and not self.settings.execution_role:
+            raise WorkflowError(
+                "AWS Batch requires an execution role ARN when using secrets. "
+                "Please provide --aws-batch-execution-role with the ARN of an IAM role "
+                "that has permissions to access AWS Secrets Manager."
+            )
+
         container_properties = {
             "image": self.container_image,
             # command requires a list of strings (docker CMD format)
@@ -276,6 +284,10 @@ class BatchJobBuilder:
                 },
             ],
         }
+
+        # Add execution role if provided (required for secrets)
+        if self.settings.execution_role:
+            container_properties["executionRoleArn"] = self.settings.execution_role
 
         # Add secrets if any are configured
         if secrets:

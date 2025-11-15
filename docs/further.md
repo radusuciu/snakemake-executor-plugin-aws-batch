@@ -27,6 +27,7 @@ running terraform apply can be exported as environment variables for snakemake-e
 SNAKEMAKE_AWS_BATCH_REGION
 SNAKEMAKE_AWS_BATCH_JOB_QUEUE
 SNAKEMAKE_AWS_BATCH_JOB_ROLE
+SNAKEMAKE_AWS_BATCH_EXECUTION_ROLE
 
 
 # AWS Secrets
@@ -35,10 +36,11 @@ This plugin supports injecting secrets from AWS Secrets Manager or AWS Systems M
 
 ## Global Secrets
 
-Global secrets are configured via the `--aws-batch-secrets` CLI flag or the `SNAKEMAKE_AWS_BATCH_SECRETS` environment variable, and are applied to all jobs:
+Global secrets are configured via the `--aws-batch-secrets` CLI flag or the `SNAKEMAKE_AWS_BATCH_SECRETS` environment variable, and are applied to all jobs. **Note:** Using secrets requires an execution role to be specified via `--aws-batch-execution-role`.
 
 ```bash
 snakemake --executor aws-batch \
+    --aws-batch-execution-role arn:aws:iam::123456789:role/ecsTaskExecutionRole \
     --aws-batch-secrets '[{"name":"DB_PASSWORD","valueFrom":"arn:aws:secretsmanager:us-west-2:123456789:secret:db-pass"}]'
 ```
 
@@ -83,7 +85,25 @@ arn:aws:ssm:region:account-id:parameter/parameter-name
 
 ## Required IAM Permissions
 
-To use secrets, your AWS Batch job role must have permissions to access the secrets:
+### Understanding Job Role vs Execution Role
+
+AWS Batch uses two different IAM roles with distinct purposes:
+
+- **Execution Role** (`--aws-batch-execution-role`): Used by the AWS ECS agent to pull container images, fetch secrets from AWS Secrets Manager/Systems Manager, and send logs to CloudWatch. This role is required when using secrets.
+
+- **Job Role** (`--aws-batch-job-role`): Used by the containerized application to access AWS services (e.g., S3, DynamoDB) during job execution.
+
+### Execution Role Permissions (Required for Secrets)
+
+When using secrets, you must provide an execution role with permissions to access AWS Secrets Manager or Systems Manager Parameter Store:
+
+```bash
+snakemake --executor aws-batch \
+    --aws-batch-execution-role arn:aws:iam::123456789:role/ecsTaskExecutionRole \
+    --aws-batch-secrets '[{"name":"DB_PASSWORD","valueFrom":"arn:aws:secretsmanager:..."}]'
+```
+
+The execution role must have the following permissions:
 
 ```json
 {
@@ -103,6 +123,8 @@ To use secrets, your AWS Batch job role must have permissions to access the secr
     ]
 }
 ```
+
+Additionally, the execution role should include the AWS managed policy `AmazonECSTaskExecutionRolePolicy` for basic ECS task execution permissions (CloudWatch Logs, ECR access).
 
 # Rule-Specific Container Images
 

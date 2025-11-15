@@ -52,6 +52,18 @@ class ExecutorSettings(ExecutorSettingsBase):
             "required": True,
         },
     )
+    execution_role: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "The AWS execution role ARN used by the ECS agent to pull images, "
+                "fetch secrets from AWS Secrets Manager, and write logs. Required when "
+                "using secrets or secretOptions."
+            ),
+            "env_var": True,
+            "required": False,
+        },
+    )
     tags: Optional[dict] = field(
         default=None,
         metadata={
