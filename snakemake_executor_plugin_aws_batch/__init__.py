@@ -131,6 +131,11 @@ class Executor(RemoteExecutor):
         # If required, make sure to pass the job's id to the job_info object, as keyword
         # argument 'external_job_id'.
 
+        # Check for rule-specific job queue
+        job_queue = str(
+            job.resources.get("aws_batch_job_queue", self.settings.job_queue)
+        )
+
         try:
             job_definition = BatchJobBuilder(
                 logger=self.logger,
@@ -140,12 +145,13 @@ class Executor(RemoteExecutor):
                 settings=self.settings,
                 job_command=self.format_job_exec(job),
                 batch_client=self.batch_client,
+                job_queue=job_queue,
             )
             job_info = job_definition.submit()
             log_info = {
                 "job_name:": job_info["jobName"],
                 "jobId": job_info["jobId"],
-                "job_queue": self.settings.job_queue,
+                "job_queue": job_queue,
             }
             self.logger.debug(f"AWS Batch job submitted: {log_info}")
         except Exception as e:

@@ -1,4 +1,4 @@
-# AWS Credentials 
+# AWS Credentials
 
 This plugin assumes you have setup AWS CLI credentials in ~/.aws/credentials. For more
 information see [aws cli configuration](https://docs.aws.amazon.com/cli/v1/userguide/cli-configure-files.html).
@@ -6,8 +6,22 @@ information see [aws cli configuration](https://docs.aws.amazon.com/cli/v1/userg
 # AWS Infrastructure Requirements
 
 The snakemake-executor-plugin-aws-batch requires an EC2 compute environment and a job queue
-to be configured. The plugin repo [contains terraform](https://github.com/snakemake/snakemake-executor-plugin-aws-batch/tree/main/terraform) used to setup 
-the requisite AWS Batch infrastructure. 
+to be configured. The plugin repo [contains terraform](https://github.com/snakemake/snakemake-executor-plugin-aws-batch/tree/main/terraform) used to setup
+the requisite AWS Batch infrastructure.
+
+# Per-Rule Configuration
+
+You can override the default job queue for specific rules using the `aws_batch_job_queue` resource:
+
+```python
+rule special_task:
+    output:
+        "output.txt"
+    resources:
+        aws_batch_job_queue="arn:aws:batch:us-west-2:123456789012:job-queue/special-queue"
+    shell:
+        "echo 'task' > {output}"
+```
 
 Assuming you have [terraform](https://developer.hashicorp.com/terraform/install) 
 installed and aws cli credentials configured, you can deploy
