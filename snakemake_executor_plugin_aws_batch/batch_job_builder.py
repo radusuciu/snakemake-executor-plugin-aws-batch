@@ -1,3 +1,4 @@
+import json
 import uuid
 from typing import List
 
@@ -153,6 +154,58 @@ class BatchJobBuilder:
             result[secret["name"]] = secret["valueFrom"]
         return result
 
+    def _parse_rule_secrets(self) -> List[dict]:
+        """Parse per-rule secrets from job resources.
+
+        Resources in Snakemake can only be int, str, None, or callables that return those types.
+        This method handles aws_batch_secrets as a JSON string or callable.
+
+        Returns:
+            List of secret dicts parsed from the resource value
+
+        Raises:
+            WorkflowError: If the resource value cannot be parsed
+        """
+        secrets_value = self.job.resources.get("aws_batch_secrets", None)
+
+        if secrets_value is None or secrets_value == "":
+            return []
+
+        # Handle callable resources (functions/lambdas that return a JSON string)
+        if callable(secrets_value):
+            try:
+                # Call the function with wildcards if available
+                # Snakemake callables typically take wildcards as first argument
+                secrets_value = secrets_value(getattr(self.job, 'wildcards', None))
+            except Exception as e:
+                raise WorkflowError(
+                    f"Failed to call aws_batch_secrets callable: {e}"
+                ) from e
+
+        # At this point, secrets_value should be a string (JSON)
+        if not isinstance(secrets_value, str):
+            raise WorkflowError(
+                f"aws_batch_secrets must be a JSON string or callable returning a JSON string, "
+                f"got {type(secrets_value)}. "
+                f"Example: aws_batch_secrets='[{{\"name\":\"API_KEY\",\"valueFrom\":\"arn:...\"}}]'"
+            )
+
+        # Parse JSON string
+        try:
+            secrets = json.loads(secrets_value)
+        except json.JSONDecodeError as e:
+            raise WorkflowError(
+                f"Failed to parse aws_batch_secrets JSON: {e}. "
+                f"Value was: {secrets_value}"
+            ) from e
+
+        if not isinstance(secrets, list):
+            raise WorkflowError(
+                f"aws_batch_secrets JSON must be a list, got {type(secrets)}"
+            )
+
+        return secrets
+
     def _merge_secrets(self) -> List[dict]:
         """Merge global and per-rule secrets.
 
@@ -165,7 +218,7 @@ class BatchJobBuilder:
         # Merge global and rule secrets (rule secrets override global)
         secrets_dict = {
             **self._validate_secrets(self.settings.secrets or [], "Global"),
-            **self._validate_secrets(self.job.resources.get("aws_batch_secrets", []), "Rule")
+            **self._validate_secrets(self._parse_rule_secrets(), "Rule")
         }
 
         # Convert back to list format for AWS Batch
