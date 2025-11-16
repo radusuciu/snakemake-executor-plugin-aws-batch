@@ -163,7 +163,7 @@ aws batch create-consumable-resource \
 
 ## Using Consumable Resources in Rules
 
-Specify consumable resources at the rule level using the `aws_batch_consumable_resources` resource parameter. The value should be a list of dictionaries, each containing:
+Specify consumable resources at the rule level using the `aws_batch_consumable_resources` resource parameter. The value must be a **JSON string** (not a Python list) containing an array of objects, each with:
 - `consumableResource`: The name of the consumable resource
 - `quantity`: The number of units required (must be a positive integer)
 
@@ -174,12 +174,12 @@ rule licensed_analysis:
     output:
         "analysis.txt"
     resources:
-        aws_batch_consumable_resources=[
-            {"consumableResource": "license-pool", "quantity": 2}
-        ]
+        aws_batch_consumable_resources='[{"consumableResource": "license-pool", "quantity": 2}]'
     shell:
         "run_analysis.sh {input} {output}"
 ```
+
+**Note:** Like `aws_batch_secrets`, the value must be a JSON string within the Snakefile because Snakemake resources can only be strings, integers, or callables returning those types.
 
 # Rule-Specific Job Timeouts
 

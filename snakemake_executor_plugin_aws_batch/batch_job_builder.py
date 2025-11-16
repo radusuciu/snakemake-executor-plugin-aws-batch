@@ -195,6 +195,47 @@ class BatchJobBuilder:
 
         return secrets
 
+    def _parse_rule_consumable_resources(self) -> List[dict]:
+        """Parse per-rule consumable resources from job resources.
+
+        Resources in Snakemake can be int, str, None, or callables that return those types.
+        Callables are evaluated by Snakemake before execution, so we only receive the value.
+        This method expects aws_batch_consumable_resources to be a JSON string.
+
+        Returns:
+            List of consumable resource dicts parsed from the resource value
+
+        Raises:
+            WorkflowError: If the resource value cannot be parsed
+        """
+        resources_value = self.job.resources.get("aws_batch_consumable_resources", None)
+
+        if resources_value is None or resources_value == "":
+            return []
+
+        # Expect a JSON string (or the result of a callable that returned a JSON string)
+        if not isinstance(resources_value, str):
+            raise WorkflowError(
+                f"aws_batch_consumable_resources must be a JSON string, got {type(resources_value)}. "
+                f"Example: aws_batch_consumable_resources='[{{\"consumableResource\":\"license-pool\",\"quantity\":2}}]'"
+            )
+
+        # Parse JSON string
+        try:
+            resources = json.loads(resources_value)
+        except json.JSONDecodeError as e:
+            raise WorkflowError(
+                f"Failed to parse aws_batch_consumable_resources JSON: {e}. "
+                f"Value was: {resources_value}"
+            ) from e
+
+        if not isinstance(resources, list):
+            raise WorkflowError(
+                f"aws_batch_consumable_resources JSON must be a list, got {type(resources)}"
+            )
+
+        return resources
+
     def _merge_secrets(self) -> List[dict]:
         """Merge global and per-rule secrets.
 
@@ -349,7 +390,8 @@ class BatchJobBuilder:
         Returns:
             list: List of consumable resource requirements in AWS Batch format
         """
-        consumable_resources = self.job.resources.get("aws_batch_consumable_resources", [])
+        # Parse consumable resources from JSON string
+        consumable_resources = self._parse_rule_consumable_resources()
 
         if not consumable_resources:
             return []
