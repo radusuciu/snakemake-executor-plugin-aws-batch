@@ -21,7 +21,7 @@ A Snakemake executor plugin for submitting jobs to AWS Batch. Full documentation
 |----------|------|-------------|
 | `aws_batch_job_queue` | string | Override default job queue for specific rule |
 | `aws_batch_container_image` | string | Use custom container image for rule |
-| `aws_batch_secrets` | JSON string | Rule-specific secrets |
-| `aws_batch_consumable_resources` | JSON string | Consumable resources (e.g., licenses) |
+| `aws_batch_secrets` | JSON string | Rule-specific secrets. Format: `'[{"name":"MY_SECRET","valueFrom":"arn:aws:secretsmanager:..."}]'` |
+| `aws_batch_consumable_resources` | JSON string | Consumable resources (e.g., licenses). Format: `'[{"consumableResource":"name","quantity":N}]'` |
 | `aws_batch_timeout` | integer | Rule-specific timeout in seconds (min: 60) |
 | `aws_batch_job_name_suffix` | string | Custom suffix for job names |
