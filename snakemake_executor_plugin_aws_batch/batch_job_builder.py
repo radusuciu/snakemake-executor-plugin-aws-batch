@@ -454,24 +454,28 @@ class BatchJobBuilder:
                 }
             )
 
-        # Add consumable resources if specified
+        timeout = {"attemptDurationSeconds": self._get_timeout()}
+        tags = self.settings.tags if isinstance(self.settings.tags, dict) else dict()
+
+        # Build job definition parameters
+        job_def_params = {
+            "jobDefinitionName": job_definition_name,
+            "type": BATCH_JOB_DEFINITION_TYPE.CONTAINER.value,
+            "containerProperties": container_properties,
+            "timeout": timeout,
+            "tags": tags,
+            "platformCapabilities": [self.platform],
+        }
+
+        # Add consumable resources if specified (top-level parameter, not in containerProperties)
         consumable_resources = self._get_consumable_resources()
         if consumable_resources:
-            container_properties["consumableResourceProperties"] = {
+            job_def_params["consumableResourceProperties"] = {
                 "consumableResourceList": consumable_resources
             }
 
-        timeout = {"attemptDurationSeconds": self._get_timeout()}
-        tags = self.settings.tags if isinstance(self.settings.tags, dict) else dict()
         try:
-            job_def = self.batch_client.register_job_definition(
-                jobDefinitionName=job_definition_name,
-                type=BATCH_JOB_DEFINITION_TYPE.CONTAINER.value,
-                containerProperties=container_properties,
-                timeout=timeout,
-                tags=tags,
-                platformCapabilities=[self.platform],
-            )
+            job_def = self.batch_client.register_job_definition(**job_def_params)
             self.created_job_defs.append(job_def)
             return job_def, job_name
         except Exception as e:
