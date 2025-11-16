@@ -288,8 +288,15 @@ class BatchJobBuilder:
 
     def build_job_definition(self):
         job_uuid = str(uuid.uuid4())
-        job_name = f"snakejob-{self.job.name}-{job_uuid}"
-        job_definition_name = f"snakejob-def-{self.job.name}-{job_uuid}"
+
+        # Support optional custom suffix via aws_batch_job_name_suffix resource
+        custom_suffix = self.job.resources.get("aws_batch_job_name_suffix", None)
+        if custom_suffix:
+            job_name = f"snakejob-{self.job.name}-{custom_suffix}-{job_uuid}"
+            job_definition_name = f"snakejob-def-{self.job.name}-{custom_suffix}-{job_uuid}"
+        else:
+            job_name = f"snakejob-{self.job.name}-{job_uuid}"
+            job_definition_name = f"snakejob-def-{self.job.name}-{job_uuid}"
 
         # Validate and convert resources
         gpu = max(0, int(self.job.resources.get("_gpus", 0)))

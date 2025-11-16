@@ -164,6 +164,32 @@ The timeout value must be:
 
 Per-rule timeouts take precedence over the global `--aws-batch-task-timeout` setting, allowing you to customize timeouts for specific rules that need more (or less) time to complete.
 
+# Custom Job Name Suffixes
+
+By default, AWS Batch jobs are named using the pattern `snakejob-{rule_name}-{uuid}`. You can add a custom suffix to job names for better identification and organization using the `aws_batch_job_name_suffix` resource parameter:
+
+```python
+rule my_analysis:
+    input:
+        "input.txt"
+    output:
+        "output.txt"
+    resources:
+        aws_batch_job_name_suffix="experiment-v2"
+    shell:
+        "process_data.sh {input} {output}"
+```
+
+This will produce job names in the format:
+```
+snakejob-my_analysis-experiment-v2-a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+Without the custom suffix, the default naming pattern is used:
+```
+snakejob-my_analysis-a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
 # Example
 
 ## Create environment
