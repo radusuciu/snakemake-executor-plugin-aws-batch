@@ -154,12 +154,53 @@ class BatchJobBuilder:
             result[secret["name"]] = secret["valueFrom"]
         return result
 
-    def _parse_rule_secrets(self) -> List[dict]:
-        """Parse per-rule secrets from job resources.
+    def _parse_json_resource(self, resource_key: str, example: str = None) -> List[dict]:
+        """Parse a JSON string resource value from job resources.
 
         Resources in Snakemake can be int, str, None, or callables that return those types.
         Callables are evaluated by Snakemake before execution, so we only receive the value.
-        This method expects aws_batch_secrets to be a JSON string.
+        This method expects the resource value to be a JSON string containing a list.
+
+        Args:
+            resource_key: The resource key to retrieve (e.g., "aws_batch_secrets")
+            example: Optional example string to include in error messages
+
+        Returns:
+            List of dicts parsed from the JSON string
+
+        Raises:
+            WorkflowError: If the resource value cannot be parsed or is not a list
+        """
+        resource_value = self.job.resources.get(resource_key, None)
+
+        if resource_value is None or resource_value == "":
+            return []
+
+        # Expect a JSON string (or the result of a callable that returned a JSON string)
+        if not isinstance(resource_value, str):
+            error_msg = f"{resource_key} must be a JSON string, got {type(resource_value)}."
+            if example:
+                error_msg += f" Example: {resource_key}='{example}'"
+            raise WorkflowError(error_msg)
+
+        # Parse JSON string
+        try:
+            parsed = json.loads(resource_value)
+        except json.JSONDecodeError as e:
+            raise WorkflowError(
+                f"Failed to parse {resource_key} JSON: {e}. "
+                f"Value was: {resource_value}"
+            ) from e
+
+        if not isinstance(parsed, list):
+            raise WorkflowError(
+                f"{resource_key} JSON must be a list, got {type(parsed)}"
+            )
+
+        return parsed
+
+    def _parse_rule_secrets(self) -> List[dict]:
+        """Parse per-rule secrets from job resources.
 
         Returns:
             List of secret dicts parsed from the resource value
@@ -167,40 +208,13 @@ class BatchJobBuilder:
         Raises:
             WorkflowError: If the resource value cannot be parsed
         """
-        secrets_value = self.job.resources.get("aws_batch_secrets", None)
-
-        if secrets_value is None or secrets_value == "":
-            return []
-
-        # Expect a JSON string (or the result of a callable that returned a JSON string)
-        if not isinstance(secrets_value, str):
-            raise WorkflowError(
-                f"aws_batch_secrets must be a JSON string, got {type(secrets_value)}. "
-                f"Example: aws_batch_secrets='[{{\"name\":\"API_KEY\",\"valueFrom\":\"arn:...\"}}]'"
-            )
-
-        # Parse JSON string
-        try:
-            secrets = json.loads(secrets_value)
-        except json.JSONDecodeError as e:
-            raise WorkflowError(
-                f"Failed to parse aws_batch_secrets JSON: {e}. "
-                f"Value was: {secrets_value}"
-            ) from e
-
-        if not isinstance(secrets, list):
-            raise WorkflowError(
-                f"aws_batch_secrets JSON must be a list, got {type(secrets)}"
-            )
-
-        return secrets
+        return self._parse_json_resource(
+            "aws_batch_secrets",
+            example='[{"name":"API_KEY","valueFrom":"arn:..."}]'
+        )
 
     def _parse_rule_consumable_resources(self) -> List[dict]:
         """Parse per-rule consumable resources from job resources.
-
-        Resources in Snakemake can be int, str, None, or callables that return those types.
-        Callables are evaluated by Snakemake before execution, so we only receive the value.
-        This method expects aws_batch_consumable_resources to be a JSON string.
 
         Returns:
             List of consumable resource dicts parsed from the resource value
@@ -208,33 +222,10 @@ class BatchJobBuilder:
         Raises:
             WorkflowError: If the resource value cannot be parsed
         """
-        resources_value = self.job.resources.get("aws_batch_consumable_resources", None)
-
-        if resources_value is None or resources_value == "":
-            return []
-
-        # Expect a JSON string (or the result of a callable that returned a JSON string)
-        if not isinstance(resources_value, str):
-            raise WorkflowError(
-                f"aws_batch_consumable_resources must be a JSON string, got {type(resources_value)}. "
-                f"Example: aws_batch_consumable_resources='[{{\"consumableResource\":\"license-pool\",\"quantity\":2}}]'"
-            )
-
-        # Parse JSON string
-        try:
-            resources = json.loads(resources_value)
-        except json.JSONDecodeError as e:
-            raise WorkflowError(
-                f"Failed to parse aws_batch_consumable_resources JSON: {e}. "
-                f"Value was: {resources_value}"
-            ) from e
-
-        if not isinstance(resources, list):
-            raise WorkflowError(
-                f"aws_batch_consumable_resources JSON must be a list, got {type(resources)}"
-            )
-
-        return resources
+        return self._parse_json_resource(
+            "aws_batch_consumable_resources",
+            example='[{"consumableResource":"license-pool","quantity":2}]'
+        )
 
     def _merge_secrets(self) -> List[dict]:
         """Merge global and per-rule secrets.
