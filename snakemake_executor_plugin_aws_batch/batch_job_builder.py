@@ -1,13 +1,16 @@
+import json
 import uuid
-from typing import List
+from typing import Any, List
+
 from snakemake_interface_common.exceptions import WorkflowError
 from snakemake_interface_executor_plugins.jobs import JobExecutorInterface
+
 from snakemake_executor_plugin_aws_batch.batch_client import BatchClient
 from snakemake_executor_plugin_aws_batch.constant import (
-    VALID_RESOURCES_MAPPING,
     BATCH_JOB_DEFINITION_TYPE,
     BATCH_JOB_PLATFORM_CAPABILITIES,
     BATCH_JOB_RESOURCE_REQUIREMENT_TYPE,
+    VALID_RESOURCES_MAPPING,
 )
 
 
@@ -32,6 +35,8 @@ class BatchJobBuilder:
         self.batch_client = batch_client
         self.job_queue = job_queue
         self.created_job_defs = []
+        # Determine platform from job queue
+        self.platform = self._get_platform_from_queue()
 
     def _make_container_command(self, remote_command: str) -> List[str]:
         """
@@ -39,36 +44,266 @@ class BatchJobBuilder:
         """
         return ["/bin/bash", "-c", remote_command]
 
-    def _validate_resources(self, vcpu: str, mem: str) -> tuple[str, str]:
-        """Validates vcpu and meme conform to Batch EC2 cpu/mem relationship
-
-        https://docs.aws.amazon.com/batch/latest/APIReference/API_ResourceRequirement.html
+    def _get_platform_from_queue(self) -> str:
         """
-        vcpu = int(vcpu)
-        mem = int(mem)
+        Determine the platform (EC2 or FARGATE) from the job queue's compute environments.
 
+        :return: Platform capability string (EC2 or FARGATE)
+        """
+        try:
+            # Query the job queue
+            queue_response = self.batch_client.describe_job_queues(
+                jobQueues=[self.settings.job_queue]
+            )
+
+            if not queue_response.get("jobQueues"):
+                self.logger.warning(
+                    f"Job queue {self.settings.job_queue} not found. Defaulting to EC2."
+                )
+                return BATCH_JOB_PLATFORM_CAPABILITIES.EC2.value
+
+            job_queue = queue_response["jobQueues"][0]
+            compute_env_order = job_queue.get("computeEnvironmentOrder", [])
+
+            if not compute_env_order:
+                self.logger.warning(
+                    f"No compute environments found for queue {self.settings.job_queue}. "
+                    "Defaulting to EC2."
+                )
+                return BATCH_JOB_PLATFORM_CAPABILITIES.EC2.value
+
+            # Get the first compute environment ARN
+            compute_env_arn = compute_env_order[0]["computeEnvironment"]
+
+            # Query the compute environment to get its type
+            env_response = self.batch_client.describe_compute_environments(
+                computeEnvironments=[compute_env_arn]
+            )
+
+            if not env_response.get("computeEnvironments"):
+                self.logger.warning(
+                    f"Compute environment {compute_env_arn} not found. Defaulting to EC2."
+                )
+                return BATCH_JOB_PLATFORM_CAPABILITIES.EC2.value
+
+            compute_env = env_response["computeEnvironments"][0]
+
+            # Check if it's a Fargate environment
+            # Fargate environments have computeResources.type == "FARGATE" or "FARGATE_SPOT"
+            compute_resources = compute_env.get("computeResources", {})
+            resource_type = compute_resources.get("type", "")
+
+            if resource_type in ["FARGATE", "FARGATE_SPOT"]:
+                self.logger.info(
+                    f"Detected FARGATE platform from queue {self.settings.job_queue}"
+                )
+                return BATCH_JOB_PLATFORM_CAPABILITIES.FARGATE.value
+            else:
+                self.logger.info(
+                    f"Detected EC2 platform from queue {self.settings.job_queue}"
+                )
+                return BATCH_JOB_PLATFORM_CAPABILITIES.EC2.value
+
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to determine platform from queue: {e}. Defaulting to EC2."
+            )
+            return BATCH_JOB_PLATFORM_CAPABILITIES.EC2.value
+
+    def _validate_fargate_resources(self, vcpu: int, mem: int) -> tuple[str, str]:
+        """Validates vcpu and memory conform to Fargate requirements.
+
+        Fargate requires strict memory/vCPU combinations.
+        https://docs.aws.amazon.com/batch/latest/userguide/fargate.html
+        """
         if mem in VALID_RESOURCES_MAPPING:
             if vcpu in VALID_RESOURCES_MAPPING[mem]:
                 return str(vcpu), str(mem)
             else:
-                raise WorkflowError(f"Invalid vCPU value {vcpu} for memory {mem} MB")
+                raise WorkflowError(f"Invalid vCPU value {vcpu} for memory {mem} MB on Fargate")
         else:
             min_mem = min([m for m, v in VALID_RESOURCES_MAPPING.items() if vcpu in v])
             self.logger.warning(
-                f"Memory value {mem} MB is invalid for vCPU {vcpu}."
+                f"Memory value {mem} MB is invalid for vCPU {vcpu} on Fargate. "
                 f"Setting memory to minimum allowed value {min_mem} MB."
             )
             return str(vcpu), str(min_mem)
 
+    def _validate_secrets(self, secrets: List[dict], source: str) -> dict:
+        """Validate secrets list and return as dict keyed by name.
+
+        Args:
+            secrets: List of secret dicts to validate
+            source: Description of where secrets came from (for error messages)
+
+        Returns:
+            Dict mapping secret name to valueFrom
+
+        Raises:
+            WorkflowError: If any secret is invalid
+        """
+        result = {}
+        for secret in secrets:
+            if not isinstance(secret, dict):
+                raise WorkflowError(
+                    f"{source} secret must be a dict with 'name' and 'valueFrom' keys, "
+                    f"got {type(secret)}"
+                )
+            if "name" not in secret or "valueFrom" not in secret:
+                raise WorkflowError(
+                    f"{source} secret must have 'name' and 'valueFrom' keys, got {secret}"
+                )
+            result[secret["name"]] = secret["valueFrom"]
+        return result
+
+    def _parse_rule_secrets(self) -> List[dict]:
+        """Parse per-rule secrets from job resources.
+
+        Resources in Snakemake can be int, str, None, or callables that return those types.
+        Callables are evaluated by Snakemake before execution, so we only receive the value.
+        This method expects aws_batch_secrets to be a JSON string.
+
+        Returns:
+            List of secret dicts parsed from the resource value
+
+        Raises:
+            WorkflowError: If the resource value cannot be parsed
+        """
+        secrets_value = self.job.resources.get("aws_batch_secrets", None)
+
+        if secrets_value is None or secrets_value == "":
+            return []
+
+        # Expect a JSON string (or the result of a callable that returned a JSON string)
+        if not isinstance(secrets_value, str):
+            raise WorkflowError(
+                f"aws_batch_secrets must be a JSON string, got {type(secrets_value)}. "
+                f"Example: aws_batch_secrets='[{{\"name\":\"API_KEY\",\"valueFrom\":\"arn:...\"}}]'"
+            )
+
+        # Parse JSON string
+        try:
+            secrets = json.loads(secrets_value)
+        except json.JSONDecodeError as e:
+            raise WorkflowError(
+                f"Failed to parse aws_batch_secrets JSON: {e}. "
+                f"Value was: {secrets_value}"
+            ) from e
+
+        if not isinstance(secrets, list):
+            raise WorkflowError(
+                f"aws_batch_secrets JSON must be a list, got {type(secrets)}"
+            )
+
+        return secrets
+
+    def _merge_secrets(self) -> List[dict]:
+        """Merge global and per-rule secrets.
+
+        Per-rule secrets take precedence over global secrets when both define
+        the same environment variable name.
+
+        Returns:
+            List of secret dicts with 'name' and 'valueFrom' keys
+        """
+        # Merge global and rule secrets (rule secrets override global)
+        secrets_dict = {
+            **self._validate_secrets(self.settings.secrets or [], "Global"),
+            **self._validate_secrets(self._parse_rule_secrets(), "Rule")
+        }
+
+        # Convert back to list format for AWS Batch
+        return [{"name": name, "valueFrom": value_from}
+                for name, value_from in secrets_dict.items()]
+
+    def _validate_timeout(self, timeout_value: Any, source: str) -> int:
+        """Validate timeout value meets AWS Batch requirements.
+
+        Args:
+            timeout_value: The timeout value to validate
+            source: Description of where timeout came from (for error messages)
+
+        Returns:
+            Validated timeout as integer
+
+        Raises:
+            WorkflowError: If timeout value is invalid
+        """
+        try:
+            timeout_int = int(timeout_value)
+        except (ValueError, TypeError) as e:
+            raise WorkflowError(
+                f"{source} timeout must be an integer, got {type(timeout_value)}: {timeout_value}"
+            ) from e
+
+        if timeout_int < 60:
+            raise WorkflowError(
+                f"{source} timeout must be at least 60 seconds, got {timeout_int}"
+            )
+
+        return timeout_int
+
+    def _get_timeout(self) -> int:
+        """Get timeout value from per-rule resource or fall back to global setting.
+
+        Per-rule timeout takes precedence over global task_timeout setting.
+
+        Returns:
+            Timeout in seconds (minimum 60)
+
+        Raises:
+            WorkflowError: If timeout value is invalid
+        """
+        # Check for per-rule timeout
+        rule_timeout = self.job.resources.get("aws_batch_timeout", None)
+
+        if rule_timeout is not None:
+            return self._validate_timeout(rule_timeout, "Per-rule")
+
+        # Fall back to global setting
+        return self._validate_timeout(self.settings.task_timeout, "Global")
+
+    def _validate_ec2_resources(self, vcpu: int, mem: int) -> tuple[str, str]:
+        """Validates vcpu and memory for EC2 compute environments.
+
+        EC2 allows flexible resource allocation - just basic sanity checks.
+        https://docs.aws.amazon.com/batch/latest/userguide/compute_environment_parameters.html
+        """
+        if vcpu < 1:
+            raise WorkflowError(f"vCPU must be at least 1, got {vcpu}")
+        if mem < 1024:
+            raise WorkflowError(f"Memory must be at least 1024 MiB, got {mem} MiB")
+        return str(vcpu), str(mem)
+
+    def _validate_resources(self, vcpu: str, mem: str) -> tuple[str, str]:
+        """Validates vcpu and memory based on platform requirements.
+
+        https://docs.aws.amazon.com/batch/latest/APIReference/API_ResourceRequirement.html
+        """
+        vcpu_int = int(vcpu)
+        mem_int = int(mem)
+
+        if self.platform == BATCH_JOB_PLATFORM_CAPABILITIES.FARGATE.value:
+            return self._validate_fargate_resources(vcpu_int, mem_int)
+        else:
+            return self._validate_ec2_resources(vcpu_int, mem_int)
+
     def build_job_definition(self):
         job_uuid = str(uuid.uuid4())
-        job_name = f"snakejob-{self.job.name}-{job_uuid}"
-        job_definition_name = f"snakejob-def-{self.job.name}-{job_uuid}"
+
+        # Support optional custom suffix via aws_batch_job_name_suffix resource
+        custom_suffix = self.job.resources.get("aws_batch_job_name_suffix", None)
+        if custom_suffix:
+            job_name = f"snakejob-{self.job.name}-{custom_suffix}-{job_uuid}"
+            job_definition_name = f"snakejob-def-{self.job.name}-{custom_suffix}-{job_uuid}"
+        else:
+            job_name = f"snakejob-{self.job.name}-{job_uuid}"
+            job_definition_name = f"snakejob-def-{self.job.name}-{job_uuid}"
 
         # Validate and convert resources
         gpu = max(0, int(self.job.resources.get("_gpus", 0)))
         vcpu = max(1, int(self.job.resources.get("_cores", 1)))  # Default to 1 vCPU
-        mem = max(1, int(self.job.resources.get("mem_mb", 2048)))  # Default to 2048 MiB
+        mem = max(1, int(self.job.resources.get("mem_mb", 1024)))  # Default to 1024 MiB
 
         vcpu_str, mem_str = self._validate_resources(str(vcpu), str(mem))
         gpu_str = str(gpu)
@@ -76,6 +311,16 @@ class BatchJobBuilder:
         environment = []
         if self.envvars:
             environment = [{"name": k, "value": v} for k, v in self.envvars.items()]
+
+        secrets = self._merge_secrets()
+
+        # Validate that execution role is provided when secrets are configured
+        if secrets and not self.settings.execution_role:
+            raise WorkflowError(
+                "AWS Batch requires an execution role ARN when using secrets. "
+                "Please provide --aws-batch-execution-role with the ARN of an IAM role "
+                "that has permissions to access AWS Secrets Manager."
+            )
 
         container_properties = {
             "image": self.container_image,
@@ -96,6 +341,14 @@ class BatchJobBuilder:
             ],
         }
 
+        # Add execution role if provided (required for secrets)
+        if self.settings.execution_role:
+            container_properties["executionRoleArn"] = self.settings.execution_role
+
+        # Add secrets if any are configured
+        if secrets:
+            container_properties["secrets"] = secrets
+
         if gpu > 0:
             container_properties["resourceRequirements"].append(
                 {
@@ -104,7 +357,7 @@ class BatchJobBuilder:
                 }
             )
 
-        timeout = {"attemptDurationSeconds": self.settings.task_timeout}
+        timeout = {"attemptDurationSeconds": self._get_timeout()}
         tags = self.settings.tags if isinstance(self.settings.tags, dict) else dict()
         try:
             job_def = self.batch_client.register_job_definition(
@@ -113,7 +366,7 @@ class BatchJobBuilder:
                 containerProperties=container_properties,
                 timeout=timeout,
                 tags=tags,
-                platformCapabilities=[BATCH_JOB_PLATFORM_CAPABILITIES.EC2.value],
+                platformCapabilities=[self.platform],
             )
             self.created_job_defs.append(job_def)
             return job_def, job_name

@@ -52,6 +52,18 @@ class ExecutorSettings(ExecutorSettingsBase):
             "required": True,
         },
     )
+    execution_role: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "The AWS execution role ARN used by the ECS agent to pull images, "
+                "fetch secrets from AWS Secrets Manager, and write logs. Required when "
+                "using secrets or secretOptions."
+            ),
+            "env_var": True,
+            "required": False,
+        },
+    )
     tags: Optional[dict] = field(
         default=None,
         metadata={
@@ -70,6 +82,19 @@ class ExecutorSettings(ExecutorSettingsBase):
                 "Task timeout (seconds) will force AWS Batch to terminate "
                 "a Batch task if it fails to finish within the timeout, minimum 60"
             )
+        },
+    )
+    secrets: Optional[List[dict]] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Global AWS Secrets to inject into all containers. List of dicts with "
+                "'name' (environment variable name) and 'valueFrom' (ARN of secret in "
+                "Secrets Manager or Systems Manager Parameter Store). Can be combined "
+                "with per-rule secrets via aws_batch_secrets resource."
+            ),
+            "env_var": False,
+            "required": False,
         },
     )
 
@@ -137,11 +162,17 @@ class Executor(RemoteExecutor):
         )
 
         try:
+            # Use rule-level container image if specified via resources,
+            # otherwise fall back to global container image
+            container_image = job.resources.get(
+                "aws_batch_container_image", self.container_image
+            )
+
             job_definition = BatchJobBuilder(
                 logger=self.logger,
                 job=job,
                 envvars=self.envvars(),
-                container_image=self.container_image,
+                container_image=container_image,
                 settings=self.settings,
                 job_command=self.format_job_exec(job),
                 batch_client=self.batch_client,
