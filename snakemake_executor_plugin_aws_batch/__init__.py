@@ -173,10 +173,14 @@ class Executor(RemoteExecutor):
                 batch_client=self.batch_client,
             )
             job_info = job_definition.submit()
+
+            # Get the job queue that was used (supports per-rule override)
+            job_queue = job.resources.get("aws_batch_job_queue", self.settings.job_queue)
+
             log_info = {
                 "job_name:": job_info["jobName"],
                 "jobId": job_info["jobId"],
-                "job_queue": self.settings.job_queue,
+                "job_queue": job_queue,
             }
             self.logger.debug(f"AWS Batch job submitted: {log_info}")
         except Exception as e:
