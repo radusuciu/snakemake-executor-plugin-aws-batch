@@ -231,8 +231,7 @@ class Executor(RemoteExecutor):
         """
         Poll for Batch job status and return exit code and message if job is complete.
 
-        Returns:
-            tuple: (exit_code, failure_message)
+        :return: tuple (exit_code, failure_message)
         """
         try:
             response = self.batch_client.describe_jobs(jobs=[job.external_jobid])
