@@ -156,11 +156,6 @@ class Executor(RemoteExecutor):
         # If required, make sure to pass the job's id to the job_info object, as keyword
         # argument 'external_job_id'.
 
-        # Check for rule-specific job queue
-        job_queue = str(
-            job.resources.get("aws_batch_job_queue", self.settings.job_queue)
-        )
-
         try:
             # Use rule-level container image if specified via resources,
             # otherwise fall back to global container image
@@ -176,9 +171,12 @@ class Executor(RemoteExecutor):
                 settings=self.settings,
                 job_command=self.format_job_exec(job),
                 batch_client=self.batch_client,
-                job_queue=job_queue,
             )
             job_info = job_definition.submit()
+
+            # Get the job queue that was used (supports per-rule override)
+            job_queue = job.resources.get("aws_batch_job_queue", self.settings.job_queue)
+
             log_info = {
                 "job_name:": job_info["jobName"],
                 "jobId": job_info["jobId"],

@@ -24,7 +24,6 @@ class BatchJobBuilder:
         settings,
         job_command: str,
         batch_client: BatchClient,
-        job_queue: str,
     ):
         self.logger = logger
         self.job = job
@@ -33,7 +32,6 @@ class BatchJobBuilder:
         self.settings = settings
         self.job_command = job_command
         self.batch_client = batch_client
-        self.job_queue = job_queue
         self.created_job_defs = []
         # Determine platform from job queue
         self.platform = self._get_platform_from_queue()
@@ -51,23 +49,26 @@ class BatchJobBuilder:
         :return: Platform capability string (EC2 or FARGATE)
         """
         try:
+            # Get the job queue (supports per-rule override)
+            job_queue = self._get_job_queue()
+
             # Query the job queue
             queue_response = self.batch_client.describe_job_queues(
-                jobQueues=[self.settings.job_queue]
+                jobQueues=[job_queue]
             )
 
             if not queue_response.get("jobQueues"):
                 self.logger.warning(
-                    f"Job queue {self.settings.job_queue} not found. Defaulting to EC2."
+                    f"Job queue {job_queue} not found. Defaulting to EC2."
                 )
                 return BATCH_JOB_PLATFORM_CAPABILITIES.EC2.value
 
-            job_queue = queue_response["jobQueues"][0]
-            compute_env_order = job_queue.get("computeEnvironmentOrder", [])
+            job_queue_info = queue_response["jobQueues"][0]
+            compute_env_order = job_queue_info.get("computeEnvironmentOrder", [])
 
             if not compute_env_order:
                 self.logger.warning(
-                    f"No compute environments found for queue {self.settings.job_queue}. "
+                    f"No compute environments found for queue {job_queue}. "
                     "Defaulting to EC2."
                 )
                 return BATCH_JOB_PLATFORM_CAPABILITIES.EC2.value
@@ -95,12 +96,12 @@ class BatchJobBuilder:
 
             if resource_type in ["FARGATE", "FARGATE_SPOT"]:
                 self.logger.info(
-                    f"Detected FARGATE platform from queue {self.settings.job_queue}"
+                    f"Detected FARGATE platform from queue {job_queue}"
                 )
                 return BATCH_JOB_PLATFORM_CAPABILITIES.FARGATE.value
             else:
                 self.logger.info(
-                    f"Detected EC2 platform from queue {self.settings.job_queue}"
+                    f"Detected EC2 platform from queue {job_queue}"
                 )
                 return BATCH_JOB_PLATFORM_CAPABILITIES.EC2.value
 
@@ -263,6 +264,30 @@ class BatchJobBuilder:
         # Fall back to global setting
         return self._validate_timeout(self.settings.task_timeout, "Global")
 
+    def _get_job_queue(self) -> str:
+        """Get job queue from per-rule resource or fall back to global setting.
+
+        Per-rule job queue takes precedence over global job_queue setting.
+
+        Returns:
+            Job queue ARN or name
+
+        Raises:
+            WorkflowError: If job queue value is invalid
+        """
+        # Check for per-rule job queue
+        rule_queue = self.job.resources.get("aws_batch_job_queue", None)
+
+        if rule_queue is not None:
+            if not isinstance(rule_queue, str):
+                raise WorkflowError(
+                    f"aws_batch_job_queue must be a string, got {type(rule_queue)}"
+                )
+            return rule_queue
+
+        # Fall back to global setting
+        return self.settings.job_queue
+
     def _validate_ec2_resources(self, vcpu: int, mem: int) -> tuple[str, str]:
         """Validates vcpu and memory for EC2 compute environments.
 
@@ -378,7 +403,7 @@ class BatchJobBuilder:
 
         job_params = {
             "jobName": job_name,
-            "jobQueue": self.job_queue,
+            "jobQueue": self._get_job_queue(),
             "jobDefinition": "{}:{}".format(
                 job_def["jobDefinitionName"], job_def["revision"]
             ),
