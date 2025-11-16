@@ -130,15 +130,10 @@ class BatchJobBuilder:
     def _validate_secrets(self, secrets: List[dict], source: str) -> dict:
         """Validate secrets list and return as dict keyed by name.
 
-        Args:
-            secrets: List of secret dicts to validate
-            source: Description of where secrets came from (for error messages)
-
-        Returns:
-            Dict mapping secret name to valueFrom
-
-        Raises:
-            WorkflowError: If any secret is invalid
+        :param secrets: List of secret dicts to validate
+        :param source: Description of where secrets came from (for error messages)
+        :return: Dict mapping secret name to valueFrom
+        :raises WorkflowError: If any secret is invalid
         """
         result = {}
         for secret in secrets:
@@ -161,15 +156,10 @@ class BatchJobBuilder:
         Callables are evaluated by Snakemake before execution, so we only receive the value.
         This method expects the resource value to be a JSON string containing a list.
 
-        Args:
-            resource_key: The resource key to retrieve (e.g., "aws_batch_secrets")
-            example: Optional example string to include in error messages
-
-        Returns:
-            List of dicts parsed from the JSON string
-
-        Raises:
-            WorkflowError: If the resource value cannot be parsed or is not a list
+        :param resource_key: The resource key to retrieve (e.g., "aws_batch_secrets")
+        :param example: Optional example string to include in error messages
+        :return: List of dicts parsed from the JSON string
+        :raises WorkflowError: If the resource value cannot be parsed or is not a list
         """
         resource_value = self.job.resources.get(resource_key, None)
 
@@ -202,11 +192,8 @@ class BatchJobBuilder:
     def _parse_rule_secrets(self) -> List[dict]:
         """Parse per-rule secrets from job resources.
 
-        Returns:
-            List of secret dicts parsed from the resource value
-
-        Raises:
-            WorkflowError: If the resource value cannot be parsed
+        :return: List of secret dicts parsed from the resource value
+        :raises WorkflowError: If the resource value cannot be parsed
         """
         return self._parse_json_resource(
             "aws_batch_secrets",
@@ -216,11 +203,8 @@ class BatchJobBuilder:
     def _parse_rule_consumable_resources(self) -> List[dict]:
         """Parse per-rule consumable resources from job resources.
 
-        Returns:
-            List of consumable resource dicts parsed from the resource value
-
-        Raises:
-            WorkflowError: If the resource value cannot be parsed
+        :return: List of consumable resource dicts parsed from the resource value
+        :raises WorkflowError: If the resource value cannot be parsed
         """
         return self._parse_json_resource(
             "aws_batch_consumable_resources",
@@ -233,8 +217,7 @@ class BatchJobBuilder:
         Per-rule secrets take precedence over global secrets when both define
         the same environment variable name.
 
-        Returns:
-            List of secret dicts with 'name' and 'valueFrom' keys
+        :return: List of secret dicts with 'name' and 'valueFrom' keys
         """
         # Merge global and rule secrets (rule secrets override global)
         secrets_dict = {
@@ -249,15 +232,10 @@ class BatchJobBuilder:
     def _validate_timeout(self, timeout_value: Any, source: str) -> int:
         """Validate timeout value meets AWS Batch requirements.
 
-        Args:
-            timeout_value: The timeout value to validate
-            source: Description of where timeout came from (for error messages)
-
-        Returns:
-            Validated timeout as integer
-
-        Raises:
-            WorkflowError: If timeout value is invalid
+        :param timeout_value: The timeout value to validate
+        :param source: Description of where timeout came from (for error messages)
+        :return: Validated timeout as integer
+        :raises WorkflowError: If timeout value is invalid
         """
         try:
             timeout_int = int(timeout_value)
@@ -278,11 +256,8 @@ class BatchJobBuilder:
 
         Per-rule timeout takes precedence over global task_timeout setting.
 
-        Returns:
-            Timeout in seconds (minimum 60)
-
-        Raises:
-            WorkflowError: If timeout value is invalid
+        :return: Timeout in seconds (minimum 60)
+        :raises WorkflowError: If timeout value is invalid
         """
         # Check for per-rule timeout
         rule_timeout = self.job.resources.get("aws_batch_timeout", None)
@@ -321,14 +296,9 @@ class BatchJobBuilder:
     def _validate_consumable_resources(self, resources: list) -> list:
         """Validate consumable resources format and values.
 
-        Args:
-            resources: List of consumable resource dicts
-
-        Returns:
-            list: Validated consumable resources in AWS Batch format
-
-        Raises:
-            WorkflowError: If validation fails
+        :param resources: List of consumable resource dicts
+        :return: Validated consumable resources in AWS Batch format
+        :raises WorkflowError: If validation fails
         """
         if not isinstance(resources, list):
             raise WorkflowError(
@@ -378,8 +348,7 @@ class BatchJobBuilder:
         Consumable resources are rate-limited resources like licenses or database
         connections that can be specified at the rule level.
 
-        Returns:
-            list: List of consumable resource requirements in AWS Batch format
+        :return: List of consumable resource requirements in AWS Batch format
         """
         # Parse consumable resources from JSON string
         consumable_resources = self._parse_rule_consumable_resources()
