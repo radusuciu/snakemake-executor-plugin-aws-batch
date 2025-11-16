@@ -1,13 +1,16 @@
+import json
 import uuid
-from typing import List
+from typing import Any, List
+
 from snakemake_interface_common.exceptions import WorkflowError
 from snakemake_interface_executor_plugins.jobs import JobExecutorInterface
+
 from snakemake_executor_plugin_aws_batch.batch_client import BatchClient
 from snakemake_executor_plugin_aws_batch.constant import (
-    VALID_RESOURCES_MAPPING,
     BATCH_JOB_DEFINITION_TYPE,
     BATCH_JOB_PLATFORM_CAPABILITIES,
     BATCH_JOB_RESOURCE_REQUIREMENT_TYPE,
+    VALID_RESOURCES_MAPPING,
 )
 
 
@@ -124,6 +127,140 @@ class BatchJobBuilder:
             )
             return str(vcpu), str(min_mem)
 
+    def _validate_secrets(self, secrets: List[dict], source: str) -> dict:
+        """Validate secrets list and return as dict keyed by name.
+
+        Args:
+            secrets: List of secret dicts to validate
+            source: Description of where secrets came from (for error messages)
+
+        Returns:
+            Dict mapping secret name to valueFrom
+
+        Raises:
+            WorkflowError: If any secret is invalid
+        """
+        result = {}
+        for secret in secrets:
+            if not isinstance(secret, dict):
+                raise WorkflowError(
+                    f"{source} secret must be a dict with 'name' and 'valueFrom' keys, "
+                    f"got {type(secret)}"
+                )
+            if "name" not in secret or "valueFrom" not in secret:
+                raise WorkflowError(
+                    f"{source} secret must have 'name' and 'valueFrom' keys, got {secret}"
+                )
+            result[secret["name"]] = secret["valueFrom"]
+        return result
+
+    def _parse_rule_secrets(self) -> List[dict]:
+        """Parse per-rule secrets from job resources.
+
+        Resources in Snakemake can be int, str, None, or callables that return those types.
+        Callables are evaluated by Snakemake before execution, so we only receive the value.
+        This method expects aws_batch_secrets to be a JSON string.
+
+        Returns:
+            List of secret dicts parsed from the resource value
+
+        Raises:
+            WorkflowError: If the resource value cannot be parsed
+        """
+        secrets_value = self.job.resources.get("aws_batch_secrets", None)
+
+        if secrets_value is None or secrets_value == "":
+            return []
+
+        # Expect a JSON string (or the result of a callable that returned a JSON string)
+        if not isinstance(secrets_value, str):
+            raise WorkflowError(
+                f"aws_batch_secrets must be a JSON string, got {type(secrets_value)}. "
+                f"Example: aws_batch_secrets='[{{\"name\":\"API_KEY\",\"valueFrom\":\"arn:...\"}}]'"
+            )
+
+        # Parse JSON string
+        try:
+            secrets = json.loads(secrets_value)
+        except json.JSONDecodeError as e:
+            raise WorkflowError(
+                f"Failed to parse aws_batch_secrets JSON: {e}. "
+                f"Value was: {secrets_value}"
+            ) from e
+
+        if not isinstance(secrets, list):
+            raise WorkflowError(
+                f"aws_batch_secrets JSON must be a list, got {type(secrets)}"
+            )
+
+        return secrets
+
+    def _merge_secrets(self) -> List[dict]:
+        """Merge global and per-rule secrets.
+
+        Per-rule secrets take precedence over global secrets when both define
+        the same environment variable name.
+
+        Returns:
+            List of secret dicts with 'name' and 'valueFrom' keys
+        """
+        # Merge global and rule secrets (rule secrets override global)
+        secrets_dict = {
+            **self._validate_secrets(self.settings.secrets or [], "Global"),
+            **self._validate_secrets(self._parse_rule_secrets(), "Rule")
+        }
+
+        # Convert back to list format for AWS Batch
+        return [{"name": name, "valueFrom": value_from}
+                for name, value_from in secrets_dict.items()]
+
+    def _validate_timeout(self, timeout_value: Any, source: str) -> int:
+        """Validate timeout value meets AWS Batch requirements.
+
+        Args:
+            timeout_value: The timeout value to validate
+            source: Description of where timeout came from (for error messages)
+
+        Returns:
+            Validated timeout as integer
+
+        Raises:
+            WorkflowError: If timeout value is invalid
+        """
+        try:
+            timeout_int = int(timeout_value)
+        except (ValueError, TypeError) as e:
+            raise WorkflowError(
+                f"{source} timeout must be an integer, got {type(timeout_value)}: {timeout_value}"
+            ) from e
+
+        if timeout_int < 60:
+            raise WorkflowError(
+                f"{source} timeout must be at least 60 seconds, got {timeout_int}"
+            )
+
+        return timeout_int
+
+    def _get_timeout(self) -> int:
+        """Get timeout value from per-rule resource or fall back to global setting.
+
+        Per-rule timeout takes precedence over global task_timeout setting.
+
+        Returns:
+            Timeout in seconds (minimum 60)
+
+        Raises:
+            WorkflowError: If timeout value is invalid
+        """
+        # Check for per-rule timeout
+        rule_timeout = self.job.resources.get("aws_batch_timeout", None)
+
+        if rule_timeout is not None:
+            return self._validate_timeout(rule_timeout, "Per-rule")
+
+        # Fall back to global setting
+        return self._validate_timeout(self.settings.task_timeout, "Global")
+
     def _validate_ec2_resources(self, vcpu: int, mem: int) -> tuple[str, str]:
         """Validates vcpu and memory for EC2 compute environments.
 
@@ -221,8 +358,15 @@ class BatchJobBuilder:
 
     def build_job_definition(self):
         job_uuid = str(uuid.uuid4())
-        job_name = f"snakejob-{self.job.name}-{job_uuid}"
-        job_definition_name = f"snakejob-def-{self.job.name}-{job_uuid}"
+
+        # Support optional custom suffix via aws_batch_job_name_suffix resource
+        custom_suffix = self.job.resources.get("aws_batch_job_name_suffix", None)
+        if custom_suffix:
+            job_name = f"snakejob-{self.job.name}-{custom_suffix}-{job_uuid}"
+            job_definition_name = f"snakejob-def-{self.job.name}-{custom_suffix}-{job_uuid}"
+        else:
+            job_name = f"snakejob-{self.job.name}-{job_uuid}"
+            job_definition_name = f"snakejob-def-{self.job.name}-{job_uuid}"
 
         # Validate and convert resources
         gpu = max(0, int(self.job.resources.get("_gpus", 0)))
@@ -235,6 +379,16 @@ class BatchJobBuilder:
         environment = []
         if self.envvars:
             environment = [{"name": k, "value": v} for k, v in self.envvars.items()]
+
+        secrets = self._merge_secrets()
+
+        # Validate that execution role is provided when secrets are configured
+        if secrets and not self.settings.execution_role:
+            raise WorkflowError(
+                "AWS Batch requires an execution role ARN when using secrets. "
+                "Please provide --aws-batch-execution-role with the ARN of an IAM role "
+                "that has permissions to access AWS Secrets Manager."
+            )
 
         container_properties = {
             "image": self.container_image,
@@ -255,6 +409,14 @@ class BatchJobBuilder:
             ],
         }
 
+        # Add execution role if provided (required for secrets)
+        if self.settings.execution_role:
+            container_properties["executionRoleArn"] = self.settings.execution_role
+
+        # Add secrets if any are configured
+        if secrets:
+            container_properties["secrets"] = secrets
+
         if gpu > 0:
             container_properties["resourceRequirements"].append(
                 {
@@ -270,7 +432,7 @@ class BatchJobBuilder:
                 "consumableResourceList": consumable_resources
             }
 
-        timeout = {"attemptDurationSeconds": self.settings.task_timeout}
+        timeout = {"attemptDurationSeconds": self._get_timeout()}
         tags = self.settings.tags if isinstance(self.settings.tags, dict) else dict()
         try:
             job_def = self.batch_client.register_job_definition(

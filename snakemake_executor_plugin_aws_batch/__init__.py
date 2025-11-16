@@ -52,6 +52,18 @@ class ExecutorSettings(ExecutorSettingsBase):
             "required": True,
         },
     )
+    execution_role: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "The AWS execution role ARN used by the ECS agent to pull images, "
+                "fetch secrets from AWS Secrets Manager, and write logs. Required when "
+                "using secrets or secretOptions."
+            ),
+            "env_var": True,
+            "required": False,
+        },
+    )
     tags: Optional[dict] = field(
         default=None,
         metadata={
@@ -70,6 +82,19 @@ class ExecutorSettings(ExecutorSettingsBase):
                 "Task timeout (seconds) will force AWS Batch to terminate "
                 "a Batch task if it fails to finish within the timeout, minimum 60"
             )
+        },
+    )
+    secrets: Optional[List[dict]] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Global AWS Secrets to inject into all containers. List of dicts with "
+                "'name' (environment variable name) and 'valueFrom' (ARN of secret in "
+                "Secrets Manager or Systems Manager Parameter Store). Can be combined "
+                "with per-rule secrets via aws_batch_secrets resource."
+            ),
+            "env_var": False,
+            "required": False,
         },
     )
 
