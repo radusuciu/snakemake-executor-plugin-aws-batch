@@ -528,9 +528,9 @@ class BatchJobBuilder:
             job_definition_name = f"snakejob-def-{self.job.name}-{job_uuid}"
 
         # Validate and convert resources
-        gpu = max(0, int(self.job.resources.get("_gpus", 0)))
-        vcpu = max(1, int(self.job.resources.get("_cores", 1)))  # Default to 1 vCPU
-        mem = max(1, int(self.job.resources.get("mem_mb", 1024)))  # Default to 1024 MiB
+        gpu = max(0, int(self.job.resources.get("aws_batch_gpu", 0)))
+        vcpu = max(1, int(self.job.resources.get("aws_batch_vcpu", 1)))  # Default to 1 vCPU
+        mem = max(1, int(self.job.resources.get("aws_batch_mem_mb", 1024)))  # Default to 1024 MiB
 
         vcpu_str, mem_str = self._validate_resources(str(vcpu), str(mem))
         gpu_str = str(gpu)

@@ -9,6 +9,30 @@ The snakemake-executor-plugin-aws-batch requires an EC2 compute environment and 
 to be configured. The plugin repo [contains terraform](https://github.com/snakemake/snakemake-executor-plugin-aws-batch/tree/main/terraform) used to setup
 the requisite AWS Batch infrastructure.
 
+# Compute Resources
+
+You can specify compute requirements for each rule using these resource parameters:
+
+## vCPU, Memory, and GPU
+
+```python
+rule compute_intensive:
+    input:
+        "input.txt"
+    output:
+        "output.txt"
+    resources:
+        aws_batch_vcpu=4,        # Number of vCPUs (default: 1)
+        aws_batch_mem_mb=8192,   # Memory in MiB (default: 1024)
+        aws_batch_gpu=1          # Number of GPUs (default: 0)
+    shell:
+        "process.sh {input} {output}"
+```
+
+**Note:** For Fargate compute environments, vCPU and memory must conform to valid combinations as specified in the [AWS Batch Fargate documentation](https://docs.aws.amazon.com/batch/latest/userguide/fargate.html). The plugin will validate these combinations and automatically adjust memory to the minimum allowed value if an invalid combination is specified.
+
+For EC2 compute environments, any positive vCPU and memory values are allowed (minimum 1 vCPU and 1024 MiB).
+
 # Per-Rule Configuration
 
 You can override the default job queue for specific rules using the `aws_batch_job_queue` resource:
