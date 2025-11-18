@@ -214,6 +214,136 @@ class BatchJobBuilder:
             example='[{"consumableResource":"license-pool","quantity":2}]'
         )
 
+    def _parse_rule_retry_strategy(self) -> dict:
+        """Parse per-rule retry strategy from job resources.
+
+        :return: Dict with retry strategy configuration
+        :raises WorkflowError: If the resource value cannot be parsed
+        """
+        resource_value = self.job.resources.get("aws_batch_retry_strategy", None)
+
+        if resource_value is None or resource_value == "":
+            return {}
+
+        # Expect a JSON string
+        if not isinstance(resource_value, str):
+            raise WorkflowError(
+                f"aws_batch_retry_strategy must be a JSON string, got {type(resource_value)}. "
+                'Example: aws_batch_retry_strategy=\'{"attempts": 3, "evaluateOnExit": [...]}\''
+            )
+
+        # Parse JSON string
+        try:
+            parsed = json.loads(resource_value)
+        except json.JSONDecodeError as e:
+            raise WorkflowError(
+                f"Failed to parse aws_batch_retry_strategy JSON: {e}. "
+                f"Value was: {resource_value}"
+            ) from e
+
+        if not isinstance(parsed, dict):
+            raise WorkflowError(
+                f"aws_batch_retry_strategy JSON must be a dict, got {type(parsed)}"
+            )
+
+        return parsed
+
+    def _validate_retry_strategy(self, retry_strategy: dict) -> dict:
+        """Validate retry strategy format and values.
+
+        :param retry_strategy: Dict with retry strategy configuration
+        :return: Validated retry strategy in AWS Batch format
+        :raises WorkflowError: If validation fails
+        """
+        if not retry_strategy:
+            return {}
+
+        if not isinstance(retry_strategy, dict):
+            raise WorkflowError(
+                "aws_batch_retry_strategy must be a dict"
+            )
+
+        validated = {}
+
+        # Validate attempts (optional, but recommended)
+        if "attempts" in retry_strategy:
+            try:
+                attempts = int(retry_strategy["attempts"])
+                if not 1 <= attempts <= 10:
+                    raise WorkflowError(
+                        f"Retry attempts must be between 1 and 10, got {attempts}"
+                    )
+                validated["attempts"] = attempts
+            except (ValueError, TypeError) as e:
+                raise WorkflowError(
+                    f"Retry attempts must be an integer: {e}"
+                ) from e
+
+        # Validate evaluateOnExit (optional)
+        if "evaluateOnExit" in retry_strategy:
+            evaluate_on_exit = retry_strategy["evaluateOnExit"]
+
+            if not isinstance(evaluate_on_exit, list):
+                raise WorkflowError(
+                    "evaluateOnExit must be a list of evaluation objects"
+                )
+
+            validated_evaluations = []
+            for idx, evaluation in enumerate(evaluate_on_exit):
+                if not isinstance(evaluation, dict):
+                    raise WorkflowError(
+                        f"evaluateOnExit[{idx}] must be a dict with 'action' key"
+                    )
+
+                # Validate action (required)
+                if "action" not in evaluation:
+                    raise WorkflowError(
+                        f"evaluateOnExit[{idx}] must have 'action' key"
+                    )
+
+                # Normalize action to uppercase (AWS Batch accepts case-insensitive values)
+                action = str(evaluation["action"]).upper()
+                if action not in ["RETRY", "EXIT"]:
+                    raise WorkflowError(
+                        f"evaluateOnExit[{idx}] action must be 'RETRY' or 'EXIT', got '{action}'"
+                    )
+
+                validated_eval = {"action": action}
+
+                # Optional fields: onStatusReason, onReason, onExitCode
+                if "onStatusReason" in evaluation:
+                    validated_eval["onStatusReason"] = str(evaluation["onStatusReason"])
+
+                if "onReason" in evaluation:
+                    validated_eval["onReason"] = str(evaluation["onReason"])
+
+                if "onExitCode" in evaluation:
+                    # Can be a string like "1" or "*" or a pattern like "1:10"
+                    validated_eval["onExitCode"] = str(evaluation["onExitCode"])
+
+                validated_evaluations.append(validated_eval)
+
+            if validated_evaluations:
+                validated["evaluateOnExit"] = validated_evaluations
+
+        return validated
+
+    def _get_retry_strategy(self) -> dict:
+        """Extract and validate retry strategy from job resources.
+
+        Retry strategy allows configuring automatic retries for failed jobs,
+        including conditional retry logic based on exit codes and status reasons.
+
+        :return: Retry strategy configuration in AWS Batch format
+        """
+        # Parse retry strategy from JSON string
+        retry_strategy = self._parse_rule_retry_strategy()
+
+        if not retry_strategy:
+            return {}
+
+        return self._validate_retry_strategy(retry_strategy)
+
     def _merge_secrets(self) -> List[dict]:
         """Merge global and per-rule secrets.
 
@@ -473,6 +603,11 @@ class BatchJobBuilder:
             job_def_params["consumableResourceProperties"] = {
                 "consumableResourceList": consumable_resources
             }
+
+        # Add retry strategy if specified
+        retry_strategy = self._get_retry_strategy()
+        if retry_strategy:
+            job_def_params["retryStrategy"] = retry_strategy
 
         try:
             job_def = self.batch_client.register_job_definition(**job_def_params)

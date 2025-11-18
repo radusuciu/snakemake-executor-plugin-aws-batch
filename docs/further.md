@@ -244,6 +244,171 @@ Without the custom suffix, the default naming pattern is used:
 snakejob-my_analysis-a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
+# Retry Strategies
+
+AWS Batch supports automatic retry of failed jobs using retry strategies. Retry strategies allow you to configure how many times a job should be retried and under what conditions retries should occur. This is useful for handling transient failures like temporary network issues, spot instance interruptions, or resource constraints.
+
+## Basic Retry Strategy
+
+The simplest retry strategy specifies just the number of retry attempts (1-10):
+
+```python
+import json
+
+rule flaky_task:
+    input:
+        "input.txt"
+    output:
+        "output.txt"
+    resources:
+        aws_batch_retry_strategy=json.dumps({
+            "attempts": 3
+        })
+    shell:
+        "process.sh {input} {output}"
+```
+
+## Advanced Retry with Conditional Logic
+
+For more control, you can use `evaluateOnExit` to specify conditions that determine whether a job should be retried or exit based on exit codes, status reasons, or custom reason strings:
+
+```python
+import json
+
+rule conditional_retry:
+    input:
+        "input.txt"
+    output:
+        "output.txt"
+    resources:
+        aws_batch_retry_strategy=json.dumps({
+            "attempts": 5,
+            "evaluateOnExit": [
+                {
+                    "action": "RETRY",
+                    "onExitCode": "137"  # OOM killer
+                },
+                {
+                    "action": "RETRY",
+                    "onStatusReason": "Host EC2*"  # EC2 spot interruption
+                },
+                {
+                    "action": "RETRY",
+                    "onReason": "*timeout*"  # Timeout errors
+                },
+                {
+                    "action": "EXIT",
+                    "onExitCode": "0"  # Success - don't retry
+                }
+            ]
+        })
+    shell:
+        "process.sh {input} {output}"
+```
+
+## Retry Strategy Configuration
+
+The retry strategy is specified as a **JSON string** using the `aws_batch_retry_strategy` resource parameter. It supports the following fields:
+
+### `attempts` (integer, optional)
+- Number of times to retry a failed job
+- Must be between 1 and 10
+- If not specified, AWS Batch uses its default retry behavior
+
+### `evaluateOnExit` (array, optional)
+- Array of up to 5 evaluation rules that determine whether to retry or exit
+- Each rule is evaluated in order until a match is found
+- If none of the conditions match, the job is retried
+
+Each `evaluateOnExit` rule can have:
+
+- **`action`** (required): Either `"RETRY"` or `"EXIT"` (case insensitive)
+- **`onExitCode`** (optional): Glob pattern to match against the exit code (up to 512 characters). Can contain only numbers and can optionally end with `*` (e.g., `"1"`, `"13*"`)
+- **`onStatusReason`** (optional): Glob pattern to match against the status reason (up to 512 characters). Can contain letters, numbers, periods, colons, white space, and can optionally end with `*`
+- **`onReason`** (optional): Glob pattern to match against the reason string (up to 512 characters). Can contain letters, numbers, periods, colons, white space, and can optionally end with `*`
+
+## Common Use Cases
+
+### Retry on Spot Instance Interruptions
+
+```python
+resources:
+    aws_batch_retry_strategy=json.dumps({
+        "attempts": 3,
+        "evaluateOnExit": [
+            {
+                "action": "RETRY",
+                "onStatusReason": "Host EC2*"
+            }
+        ]
+    })
+```
+
+### Retry on Out-of-Memory Errors
+
+```python
+resources:
+    aws_batch_retry_strategy=json.dumps({
+        "attempts": 2,
+        "evaluateOnExit": [
+            {
+                "action": "RETRY",
+                "onExitCode": "137"  # SIGKILL (OOM)
+            }
+        ]
+    })
+```
+
+### Retry on Specific Exit Codes
+
+```python
+resources:
+    aws_batch_retry_strategy=json.dumps({
+        "attempts": 4,
+        "evaluateOnExit": [
+            {
+                "action": "RETRY",
+                "onExitCode": "1*"  # Retry on any exit code starting with 1
+            },
+            {
+                "action": "EXIT",
+                "onExitCode": "0"  # Don't retry on success
+            }
+        ]
+    })
+```
+
+## Dynamic Retry Strategies
+
+You can use Snakemake functions to dynamically generate retry strategies based on rule parameters or wildcards:
+
+```python
+def get_retry_strategy(wildcards, attempt):
+    """Return retry strategy based on dataset size"""
+    if wildcards.dataset == "large":
+        return json.dumps({
+            "attempts": 5,
+            "evaluateOnExit": [
+                {"action": "RETRY", "onExitCode": "137"},  # OOM
+                {"action": "RETRY", "onStatusReason": "*timeout*"}
+            ]
+        })
+    else:
+        return json.dumps({"attempts": 2})
+
+rule process_data:
+    input:
+        "data/{dataset}.txt"
+    output:
+        "results/{dataset}.out"
+    resources:
+        aws_batch_retry_strategy=get_retry_strategy
+    shell:
+        "process.sh {input} {output}"
+```
+
+**Note:** Like other complex resource parameters (`aws_batch_secrets`, `aws_batch_consumable_resources`), the value must be a JSON string, not a Python dict. Use `json.dumps()` to convert Python dicts to JSON strings.
+
 # Example
 
 ## Create environment
