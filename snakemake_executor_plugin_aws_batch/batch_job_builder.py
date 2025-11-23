@@ -516,7 +516,8 @@ class BatchJobBuilder:
         return self._validate_consumable_resources(consumable_resources)
 
     def build_job_definition(self):
-        job_uuid = str(uuid.uuid4())
+        # Support custom UUID via aws_batch_job_uuid resource, otherwise generate one
+        job_uuid = self.job.resources.get("aws_batch_job_uuid", str(uuid.uuid4()))
 
         # Support optional custom suffix via aws_batch_job_name_suffix resource
         custom_suffix = self.job.resources.get("aws_batch_job_name_suffix", None)

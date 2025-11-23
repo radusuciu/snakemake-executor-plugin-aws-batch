@@ -268,6 +268,47 @@ Without the custom suffix, the default naming pattern is used:
 snakejob-my_analysis-a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
+# Custom Job Identifiers
+
+By default, AWS Batch job names include an automatically generated UUID for uniqueness. You can override this with a custom identifier using the `aws_batch_job_uuid` resource parameter:
+
+```python
+rule my_analysis:
+    input:
+        "input.txt"
+    output:
+        "output.txt"
+    resources:
+        aws_batch_job_uuid="custom-id-12345"
+    shell:
+        "process_data.sh {input} {output}"
+```
+
+This will produce job names in the format:
+```
+snakejob-my_analysis-custom-id-12345
+```
+
+You can combine both custom suffix and custom UUID:
+
+```python
+rule my_analysis:
+    input:
+        "input.txt"
+    output:
+        "output.txt"
+    resources:
+        aws_batch_job_name_suffix="experiment-v2",
+        aws_batch_job_uuid="run-001"
+    shell:
+        "process_data.sh {input} {output}"
+```
+
+This will produce job names in the format:
+```
+snakejob-my_analysis-experiment-v2-run-001
+```
+
 # Retry Strategies
 
 AWS Batch supports automatic retry of failed jobs using retry strategies. Retry strategies allow you to configure how many times a job should be retried and under what conditions retries should occur. This is useful for handling transient failures like temporary network issues, spot instance interruptions, or resource constraints.
