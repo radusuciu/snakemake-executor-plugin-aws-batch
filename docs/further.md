@@ -161,6 +161,109 @@ The execution role must have the following permissions:
 
 Additionally, the execution role should include the AWS managed policy `AmazonECSTaskExecutionRolePolicy` for basic ECS task execution permissions (CloudWatch Logs, ECR access).
 
+# Job Definition Templates
+
+Instead of building job definitions from scratch for every job, you can specify an existing job definition as a template. The plugin will fetch the template's configuration (container image, IAM roles, network settings, etc.) and merge it with any rule-specific overrides.
+
+## Basic Usage
+
+```python
+rule my_rule:
+    output: "result.txt"
+    resources:
+        aws_batch_job_definition_template="arn:aws:batch:us-west-2:123456789:job-definition/my-base-def:1"
+    shell:
+        "process.sh {output}"
+```
+
+When a template is specified, the plugin:
+1. Fetches the template job definition from AWS using `DescribeJobDefinitions`
+2. Extracts reusable properties (container config, timeout, retry strategy, tags, etc.)
+3. Deep merges the template with plugin-generated values (command, environment variables)
+4. Registers a new job definition with the merged configuration
+
+## When to Use Templates
+
+Templates are useful when you have:
+- Pre-configured job definitions with network settings, volumes, or mount points
+- Complex configurations (log configuration, ulimits, linux parameters) you don't want to repeat
+- Default retry strategies or consumable resources you want to inherit
+
+## Overriding Template Properties
+
+You can still override specific properties per-rule. Plugin-generated values take precedence over template values:
+
+```python
+rule custom_resources:
+    output: "result.txt"
+    resources:
+        aws_batch_job_definition_template="arn:aws:batch:...:job-definition/base:1",
+        aws_batch_vcpu=8,           # Override vCPU from template
+        aws_batch_mem_mb=16384,     # Override memory from template
+        aws_batch_timeout=3600,     # Override timeout from template
+        aws_batch_container_image="custom-image:v2"  # Override image from template
+    shell:
+        "heavy_process.sh {output}"
+```
+
+## Properties Always Overridden
+
+The following properties are always set by the plugin and will override template values:
+- `command`: The Snakemake job command
+- `environment`: Environment variables passed to the job
+- `image`: Container image (from `--container-image` or `aws_batch_container_image` resource)
+- `jobRoleArn`: Job role (from `--aws-batch-job-role`)
+- `privileged`: Always set to `True`
+- `resourceRequirements`: vCPU, memory, GPU (defaults: 1 vCPU, 1024 MiB)
+- `timeout`: Job timeout (from `--aws-batch-task-timeout` or `aws_batch_timeout` resource)
+- `platformCapabilities`: Detected from job queue
+- `tags`: From executor settings
+
+## Properties Inherited from Template
+
+These properties are inherited from the template (plugin doesn't set them):
+- Network configuration (`networkConfiguration`)
+- Volumes and mount points (`volumes`, `mountPoints`)
+- Linux parameters (`linuxParameters`)
+- Log configuration (`logConfiguration`)
+- Ulimits (`ulimits`)
+- User (`user`)
+- Scheduling priority (if not set by plugin)
+
+If you specify `aws_batch_retry_strategy` or `aws_batch_consumable_resources` in your rule, those will override template values. Otherwise, the template's retry strategy and consumable resources are inherited.
+
+## Deep Merge Behavior
+
+The merge follows these rules:
+- **Nested dicts**: Recursively merged (e.g., `containerProperties` contents)
+- **Lists**: Override replaces template (e.g., `resourceRequirements`)
+- **Scalars**: Override replaces template
+- **Keys only in template**: Preserved
+- **Keys only in override**: Added
+
+## Example: Complex Template
+
+```python
+# Template job definition in AWS has:
+# - Specific VPC configuration
+# - Custom IAM roles
+# - Privileged mode enabled
+# - Volumes mounted
+
+rule secure_analysis:
+    input: "data.txt"
+    output: "analysis.txt"
+    resources:
+        aws_batch_job_definition_template="arn:aws:batch:us-west-2:123:job-definition/secure-base:1",
+        aws_batch_vcpu=4,
+        aws_batch_mem_mb=8192
+    shell:
+        "secure_process.sh {input} {output}"
+
+# Result: Uses template's VPC, roles, volumes, privileged mode
+#         but with 4 vCPUs and 8GB memory instead of template defaults
+```
+
 # Rule-Specific Container Images
 
 By default, all jobs use the global container image specified via `--container-image`. However, you can specify a different container image for individual rules using the `aws_batch_container_image` resource parameter:

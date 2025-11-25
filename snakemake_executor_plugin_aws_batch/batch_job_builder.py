@@ -1,6 +1,7 @@
+import copy
 import json
 import uuid
-from typing import Any, List
+from typing import Any, Dict, List, Optional
 
 from snakemake_interface_common.exceptions import WorkflowError
 from snakemake_interface_executor_plugins.jobs import JobExecutorInterface
@@ -12,6 +13,30 @@ from snakemake_executor_plugin_aws_batch.constant import (
     BATCH_JOB_RESOURCE_REQUIREMENT_TYPE,
     VALID_RESOURCES_MAPPING,
 )
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Deep merge two dictionaries, with override values taking precedence.
+
+    - For nested dicts: recursively merge
+    - For all other types (including lists): override replaces base
+    - Keys in override that don't exist in base are added
+
+    :param base: The base dictionary (e.g., from template)
+    :param override: The override dictionary (e.g., plugin-generated values)
+    :return: Merged dictionary
+    """
+    result = copy.deepcopy(base)
+    for key, override_value in override.items():
+        if key in result:
+            base_value = result[key]
+            if isinstance(base_value, dict) and isinstance(override_value, dict):
+                result[key] = _deep_merge(base_value, override_value)
+            else:
+                result[key] = copy.deepcopy(override_value)
+        else:
+            result[key] = copy.deepcopy(override_value)
+    return result
 
 
 class BatchJobBuilder:
@@ -515,6 +540,102 @@ class BatchJobBuilder:
 
         return self._validate_consumable_resources(consumable_resources)
 
+    def _get_job_definition_template(self) -> Optional[str]:
+        """Get job definition template ARN from per-rule resource.
+
+        :return: Job definition ARN or None if not specified
+        :raises WorkflowError: If the resource value is not a string
+        """
+        template = self.job.resources.get("aws_batch_job_definition_template", None)
+        if template is not None and not isinstance(template, str):
+            raise WorkflowError(
+                f"aws_batch_job_definition_template must be a string, got {type(template)}"
+            )
+        return template
+
+    def _fetch_template_job_definition(self, template_arn: str) -> Dict[str, Any]:
+        """Fetch existing job definition details from AWS.
+
+        :param template_arn: ARN of the job definition to fetch
+        :return: Job definition configuration dict
+        :raises WorkflowError: If the job definition is not found
+        """
+        try:
+            response = self.batch_client.describe_job_definitions(
+                jobDefinitions=[template_arn]
+            )
+        except Exception as e:
+            raise WorkflowError(
+                f"Failed to describe job definition template {template_arn}: {e}"
+            ) from e
+
+        job_definitions = response.get("jobDefinitions", [])
+        if not job_definitions:
+            raise WorkflowError(
+                f"Job definition template not found: {template_arn}"
+            )
+
+        # Filter for ACTIVE status if multiple revisions returned
+        active_defs = [jd for jd in job_definitions if jd.get("status") == "ACTIVE"]
+        if active_defs:
+            return active_defs[0]
+
+        # Fall back to first result if no active ones
+        return job_definitions[0]
+
+    def _extract_template_properties(
+        self, template: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Extract reusable properties from a template job definition.
+
+        Extracts container properties, timeout, retry strategy, tags, and other
+        configurations that can be inherited from the template.
+
+        :param template: Full job definition from describe_job_definitions
+        :return: Dict of properties suitable for register_job_definition
+        """
+        extracted = {}
+
+        # Extract container properties (main configuration)
+        if "containerProperties" in template:
+            extracted["containerProperties"] = copy.deepcopy(
+                template["containerProperties"]
+            )
+
+        # Extract timeout
+        if "timeout" in template:
+            extracted["timeout"] = copy.deepcopy(template["timeout"])
+
+        # Extract retry strategy
+        if "retryStrategy" in template:
+            extracted["retryStrategy"] = copy.deepcopy(template["retryStrategy"])
+
+        # Extract tags
+        if "tags" in template:
+            extracted["tags"] = copy.deepcopy(template["tags"])
+
+        # Extract platform capabilities
+        if "platformCapabilities" in template:
+            extracted["platformCapabilities"] = copy.deepcopy(
+                template["platformCapabilities"]
+            )
+
+        # Extract consumable resource properties
+        if "consumableResourceProperties" in template:
+            extracted["consumableResourceProperties"] = copy.deepcopy(
+                template["consumableResourceProperties"]
+            )
+
+        # Extract scheduling priority
+        if "schedulingPriority" in template:
+            extracted["schedulingPriority"] = template["schedulingPriority"]
+
+        # Extract propagate tags
+        if "propagateTags" in template:
+            extracted["propagateTags"] = template["propagateTags"]
+
+        return extracted
+
     def build_job_definition(self):
         # Support custom UUID via aws_batch_job_uuid resource, otherwise generate one
         job_uuid = self.job.resources.get("aws_batch_job_uuid", str(uuid.uuid4()))
@@ -550,8 +671,13 @@ class BatchJobBuilder:
                 "that has permissions to access AWS Secrets Manager."
             )
 
+        # Use per-rule container image if specified, otherwise use global
+        container_image = self.job.resources.get(
+            "aws_batch_container_image", self.container_image
+        )
+
         container_properties = {
-            "image": self.container_image,
+            "image": container_image,
             # command requires a list of strings (docker CMD format)
             "command": self._make_container_command(self.job_command),
             "environment": environment,
@@ -609,6 +735,15 @@ class BatchJobBuilder:
         retry_strategy = self._get_retry_strategy()
         if retry_strategy:
             job_def_params["retryStrategy"] = retry_strategy
+
+        # If a template is specified, merge template properties with our params
+        # Template provides base values, our params override them
+        template_arn = self._get_job_definition_template()
+        if template_arn:
+            template = self._fetch_template_job_definition(template_arn)
+            self.logger.info(f"Using job definition template: {template_arn}")
+            template_params = self._extract_template_properties(template)
+            job_def_params = _deep_merge(template_params, job_def_params)
 
         try:
             job_def = self.batch_client.register_job_definition(**job_def_params)

@@ -90,3 +90,12 @@ class BatchClient:
         :return: The response from the describe_compute_environments method.
         """
         return self.client.describe_compute_environments(**kwargs)
+
+    def describe_job_definitions(self, **kwargs):
+        """
+        Describe job definitions in AWS Batch.
+
+        :param kwargs: The keyword arguments to pass to the describe_job_definitions method.
+        :return: The response from the describe_job_definitions method.
+        """
+        return self.client.describe_job_definitions(**kwargs)
